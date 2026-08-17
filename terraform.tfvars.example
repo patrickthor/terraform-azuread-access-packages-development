@@ -1,0 +1,53 @@
+# Kopier til terraform.tfvars og fyll inn reelle verdier.
+#
+# VIKTIG: subscriptions-strukturen skal være IDENTISK med
+# terraform-azuread-access-vending. Enkleste rutine er å kopiere blokka mellom
+# repoene i samme PR-runde. Divergens gir "no group found" ved apply.
+
+tenant_id = "00000000-0000-0000-0000-000000000000"
+
+# MÅ matche cloud_prefix i vending-repoet.
+cloud_prefix = "azure"
+
+catalog_display_name = "Azure Subscriptions"
+catalog_description  = "Access packages for tilgang til Azure-subscriptions. Forvaltet av Terraform."
+
+# Kort expiry er POC-ens substitutt for access reviews. Oppgaven sier 7-14 dager.
+default_assignment_duration_days = 14
+
+subscriptions = {
+  "sub-alpha" = {
+    subscription_id = "00000000-0000-0000-0000-000000000000"
+    systemeier      = "ola@kunde.no"
+
+    roles = {
+      # Permanent rolle. Access package-en gir aktivt gruppemedlemskap, som
+      # aktiverer den permanente RBAC-bindingen vending-repoet satte opp.
+      "reader" = {
+        azure_role    = "Reader"
+        pim_enabled   = false
+        approval_type = "owner" # systemeier godkjenner
+      }
+
+      # PIM-rolle. Pakken gir medlemskap; PIM-aktivering styres av vending-repoet.
+      "contributor" = {
+        azure_role          = "Contributor"
+        pim_enabled         = true
+        approval_type       = "team"
+        approver_group_name = "azure-platform-approvers"
+      }
+
+      # dual gir TO godkjenningssteg her: først team, deretter systemeier.
+      # Se beslutning B3 i PROSJEKT-SAMMENDRAG.md.
+      "owner" = {
+        azure_role          = "Owner"
+        pim_enabled         = true
+        approval_type       = "dual"
+        approver_group_name = "azure-platform-approvers"
+
+        # Kortere expiry på den mest privilegerte rollen.
+        assignment_duration_days = 7
+      }
+    }
+  }
+}
