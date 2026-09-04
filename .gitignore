@@ -23,9 +23,12 @@ crash.*.log
 # ------------------------------------------------------------------------------
 # Variable files
 #
-# terraform.tfvars holds the real tenant ID, the state storage account name and any
-# per-scope overrides. Never commit it. The example file with placeholders does
-# belong in git.
+# terraform.tfvars is ignored HERE, in a module repo, because this repo's own root is a
+# development and split-state harness and its tfvars is scaffolding.
+#
+# In a CUSTOMER root the opposite applies: terraform.tfvars is committed, because for an
+# access system the configuration is the governance record — the reviewable answer to who
+# may reach what. It holds no secrets; object IDs and UPNs are not credentials.
 # ------------------------------------------------------------------------------
 *.tfvars
 *.tfvars.json

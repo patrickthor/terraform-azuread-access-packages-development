@@ -1,11 +1,12 @@
 # ==============================================================================
 # Root inputs
 #
-# Note what is absent: there is no scope list and no role list. Those come from
-# repo 1's state. Adding a scope or a role in repo 1 needs no change here at all.
+# Note what is absent: no scope list, no role list, no group name, no catalog label.
+# All of it comes from repo 1's contract. Adding a scope, a role or a catalog in repo 1
+# needs no change here.
 #
-# The field reference for `defaults` and `scope_overrides` lives in
-# modules/access-packages/README.md. It is deliberately not duplicated into tfvars
+# The field reference for `catalogs`, `defaults` and `scope_overrides` lives in
+# modules/access-packages/README.md and is deliberately not duplicated into tfvars
 # comments — copied reference tables end up in user files and never get updated.
 # ==============================================================================
 
@@ -21,6 +22,9 @@ variable "tenant_id" {
 
 # ------------------------------------------------------------------------------
 # Where repo 1's state lives
+#
+# Only needed by this split-state root. A customer using the reference architecture
+# calls both modules from one root and needs none of these.
 # ------------------------------------------------------------------------------
 
 variable "state_resource_group_name" {
@@ -29,7 +33,7 @@ variable "state_resource_group_name" {
 }
 
 variable "state_storage_account_name" {
-  description = "Storage account holding repo 1's state. The deploy identity needs Storage Blob Data Reader on it."
+  description = "Storage account holding repo 1's state. This identity needs at least Storage Blob Data Reader on it."
   type        = string
 }
 
@@ -41,9 +45,9 @@ variable "state_container_name" {
 
 variable "vending_state_key" {
   description = <<-EOT
-    State key for repo 1 (access-vending). This is repo 1's key, not repo 2's — repo
-    2 reads it. Repo 2 writes its own state to a separate key, configured in
-    backend.hcl.
+    State key for repo 1 (access-vending). This is repo 1's key, which this root reads.
+    Repo 2 writes its own state to a different key, configured in backend.hcl — pointing
+    the backend at this key would destroy the contract this root depends on.
   EOT
   type        = string
   default     = "access-vending.tfstate"
@@ -51,33 +55,35 @@ variable "vending_state_key" {
 
 variable "state_use_azuread_auth" {
   description = <<-EOT
-    Authenticate to the state storage account with Entra identity rather than a
-    storage account key. Leave true: an account key would be a second, longer-lived
-    credential to manage, and RBAC on the container is auditable.
+    Authenticate to the state storage account with an Entra identity rather than a storage
+    account key. Leave true: an account key is a second long-lived credential to manage,
+    and container RBAC is auditable.
   EOT
   type        = bool
   default     = true
 }
 
 # ------------------------------------------------------------------------------
-# Catalog
+# Passthrough to the module
 # ------------------------------------------------------------------------------
 
-variable "catalog_display_name" {
-  description = "Display name of the catalog holding every access package."
-  type        = string
-  default     = "Cloud Access"
+variable "catalogs" {
+  description = <<-EOT
+    Per-catalog settings, keyed on the catalog LABEL from repo 1's contract. Every key is
+    optional; a label with no entry gets the defaults, so the simple case needs nothing
+    here.
+  EOT
+  type = map(object({
+    display_name            = optional(string)
+    description             = optional(string)
+    externally_visible      = optional(bool, false)
+    published               = optional(bool, true)
+    adopt_existing          = optional(bool, false)
+    delegate_to_systemeier  = optional(bool, false)
+    systemeier_catalog_role = optional(string, "Access package manager")
+  }))
+  default = {}
 }
-
-variable "catalog_description" {
-  description = "Description of the catalog."
-  type        = string
-  default     = "Access packages for Terraform-vended cloud access. Managed by repo 2 (access-packages)."
-}
-
-# ------------------------------------------------------------------------------
-# Request-side settings — see modules/access-packages/README.md
-# ------------------------------------------------------------------------------
 
 variable "defaults" {
   description = "Request-side settings applied to every package unless overridden per scope."
@@ -107,16 +113,11 @@ variable "scope_overrides" {
   default = {}
 }
 
-# ------------------------------------------------------------------------------
-# Blocker 2.1
-# ------------------------------------------------------------------------------
-
 variable "manage_pim_for_groups_roles" {
   description = <<-EOT
-    Attach roles whose required access type is "EligibleMember" anyway, downgraded to
+    Attach roles whose contract access_type is "EligibleMember" anyway, downgraded to
     "Member". Default false. Setting this true converts just-in-time eligibility into
-    standing active membership and also requires
-    acknowledge_m3_active_membership = true.
+    standing active membership and also requires acknowledge_m3_active_membership = true.
   EOT
   type        = bool
   default     = false
@@ -126,10 +127,4 @@ variable "acknowledge_m3_active_membership" {
   description = "Explicit acknowledgement of the security regression that manage_pim_for_groups_roles causes."
   type        = bool
   default     = false
-}
-
-variable "m3_max_duration_days" {
-  description = "Ceiling on assignment duration for packages containing pim_for_groups roles. Trap 6.1."
-  type        = number
-  default     = 30
 }

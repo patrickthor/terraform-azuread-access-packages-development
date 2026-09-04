@@ -1,27 +1,29 @@
 # ==============================================================================
-# Root — thin passthrough to modules/access-packages
+# Root — split-state reference configuration
 #
-# The root does exactly two things: read repo 1's state, and hand it to the module.
-# All logic lives in the module so that it can be consumed from a pinned git ref by
-# anyone else, with a different state layout or none at all.
+# THE REFERENCE ARCHITECTURE IS NOT THIS ONE. In the architecture both repos are
+# built for, a customer root calls both modules and the contract flows in memory:
 #
-# PREREQUISITE: repo 1 (access-vending) must have applied first. Under this design
-# that is not a convention you have to remember — the plan physically cannot resolve
-# without repo 1's state, so getting the order wrong fails instead of silently
-# producing active membership where eligibility was intended. See trap 6.2.
+#   module "access_vending"  { source = "git::...access-vending//modules/access-vending?ref=v1.0.0"  ... }
+#   module "access_packages" { source = "git::...access-packages//modules/access-packages?ref=v1.0.0"
+#                              vending = module.access_vending.contract }
+#
+# One root, one state, one apply, one committed terraform.tfvars — and the apply order
+# becomes a property of the dependency graph rather than a convention. See
+# examples/two-module-root for that shape.
+#
+# This root exists because repo 2 cannot vendor repo 1's module, and because the POC
+# tenant is currently deployed as two separate states. It is the documented
+# split-state variant: the remote state read lives HERE, in a root, never in the
+# module. The module takes a plain typed object precisely so that where the contract
+# comes from stays the caller's decision.
+#
+# The cost of this variant is real and worth naming: with two states, nothing forces
+# repo 1 to be applied first. The plan cannot resolve without repo 1's state, which
+# catches the empty case, but a *stale* state still plans cleanly. For pim_for_groups
+# roles that matters — it is the act of writing the PIM policy that onboards a group to
+# PIM for Groups, and until then the platform does not offer EligibleMember at all.
 # ==============================================================================
-
-# ------------------------------------------------------------------------------
-# The contract from repo 1
-#
-# Remote state rather than looking groups up by display_name. A name lookup sounds
-# more loosely coupled, but to look a group up by name repo 2 would have to know
-# every scope key and role key independently — its own copy of the taxonomy, which
-# is the duplication worth avoiding. Add a role in repo 1, forget it here, and it
-# would silently have no access package. See section 3.1.
-#
-# Requires Storage Blob Data Reader on repo 1's state storage account.
-# ------------------------------------------------------------------------------
 
 data "terraform_remote_state" "vending" {
   backend = "azurerm"
@@ -35,43 +37,20 @@ data "terraform_remote_state" "vending" {
   }
 }
 
-locals {
-  v = data.terraform_remote_state.vending.outputs
-}
-
 module "access_packages" {
   source = "./modules/access-packages"
 
-  # The taxonomy. Assembled explicitly rather than passed as a whole object so that
-  # a missing or renamed output in repo 1 fails here, by name, instead of surfacing
-  # as a confusing type error deeper in the module.
-  vending = {
-    group_names                = local.v.group_names
-    group_object_ids           = local.v.group_object_ids
-    access_package_access_type = local.v.access_package_access_type
-    jit_mechanism              = local.v.jit_mechanism
+  # Repo 1 exposes exactly one machine-readable output and this module accepts exactly
+  # one machine-readable input. They are the same object, so there is nothing to
+  # assemble here and no field to guard with try(). A try() around a contract field is
+  # how a missing access_type silently becomes standing access; contract_version is
+  # what handles compatibility, and it fails loudly.
+  vending = data.terraform_remote_state.vending.outputs.contract
 
-    systemeier_by_scope            = local.v.systemeier_by_scope
-    approver_group_object_ids      = local.v.approver_group_object_ids
-    approver_group_names           = local.v.approver_group_names
-    approver_group_is_managed_here = local.v.approver_group_is_managed_here
-
-    # Reference only — forwarded to outputs, never interpreted. try() because these
-    # describe gate 2, which repo 1 owns; if an older repo 1 does not publish them,
-    # repo 2 still builds a correct gate 1 and simply has less to report.
-    approvers_by_role               = try(local.v.approvers_by_role, {})
-    access_model                    = try(local.v.access_model, {})
-    activation_settings             = try(local.v.activation_settings, {})
-    entra_activation_governance_gap = try(local.v.entra_activation_governance_gap, {})
-  }
-
-  catalog_display_name = var.catalog_display_name
-  catalog_description  = var.catalog_description
-
+  catalogs        = var.catalogs
   defaults        = var.defaults
   scope_overrides = var.scope_overrides
 
   manage_pim_for_groups_roles      = var.manage_pim_for_groups_roles
   acknowledge_m3_active_membership = var.acknowledge_m3_active_membership
-  m3_max_duration_days             = var.m3_max_duration_days
 }

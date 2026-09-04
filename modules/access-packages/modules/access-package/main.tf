@@ -55,7 +55,7 @@ resource "azuread_access_package_assignment_policy" "this" {
 
     # Each element is one sequential stage. Multiple stages are only achievable
     # here, on the access package — the PIM policy resources cap approval_stage
-    # at max_items = 1. See section 4.2 of ASSIGNMENT-2-STEERING.md.
+    # at max_items = 1, so sequential approval is only achievable here.
     dynamic "approval_stage" {
       for_each = var.approval_stages
 

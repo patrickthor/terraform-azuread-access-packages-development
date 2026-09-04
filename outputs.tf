@@ -1,24 +1,19 @@
 # ==============================================================================
 # Root outputs — forwarded from the module
 #
-# Read `manual_steps_required` and `excluded_resource_roles` first. A successful
-# apply here does not mean the access model holds; parts of it cannot be expressed
-# in Terraform today and those parts are listed there.
+# Read `manual_steps_required` first. A successful apply does not mean the access model
+# holds: parts of it cannot be expressed in Terraform today, and those parts are listed
+# there rather than in a comment.
 # ==============================================================================
 
-output "catalog_id" {
-  description = "ID of the catalog holding every package."
-  value       = module.access_packages.catalog_id
+output "catalogs" {
+  description = "Label → catalog ID, display name, whether it was created or adopted, and any standing delegation."
+  value       = module.access_packages.catalogs
 }
 
-output "catalog_display_name" {
-  description = "Display name of the catalog, as shown in MyAccess."
-  value       = module.access_packages.catalog_display_name
-}
-
-output "scopes" {
-  description = "Scopes derived from repo 1's state. One access package each."
-  value       = module.access_packages.scopes
+output "packages_by_catalog" {
+  description = "Which packages landed in which catalog. A catalog is a delegation boundary, so this is security-relevant."
+  value       = module.access_packages.packages_by_catalog
 }
 
 output "access_package_ids" {
@@ -31,60 +26,47 @@ output "assignment_policy_ids" {
   value       = module.access_packages.assignment_policy_ids
 }
 
-output "roles_by_scope" {
-  description = "Composite role keys grouped by the package they belong to."
-  value       = module.access_packages.roles_by_scope
-}
-
 output "granted_groups_by_package" {
-  description = "Groups each package grants, with the access type Terraform set."
+  description = "What each package actually grants, after exclusions."
   value       = module.access_packages.granted_groups_by_package
 }
 
 output "effective_policies" {
-  description = "What each package actually enforces, after defaults and overrides were layered."
+  description = "What each package enforces after defaults and overrides were layered."
   value       = module.access_packages.effective_policies
 }
 
-# ------------------------------------------------------------------------------
-# The two gates
-# ------------------------------------------------------------------------------
-
 output "gate_1_approvers" {
-  description = "Who approves entry to each scope. The only approval gate repo 2 owns."
+  description = "Per package, the systemeier acting as named approvers. The only approval gate this repo owns."
   value       = module.access_packages.gate_1_approvers
 }
 
 output "gate_2_approvers" {
-  description = "Repo 1's approvers_by_role, forwarded. PIM activation approval, which repo 1 owns."
+  description = "Repo 1's activation rules, republished per role and interpreted nowhere."
   value       = module.access_packages.gate_2_approvers
 }
 
-output "entra_activation_governance_gap" {
-  description = "Repo 1's report of what it cannot manage for entra_role activation. Trap 6.4."
-  value       = module.access_packages.entra_activation_governance_gap
-}
-
-# ------------------------------------------------------------------------------
-# Honesty outputs
-# ------------------------------------------------------------------------------
-
 output "excluded_resource_roles" {
-  description = "Groups left out of Terraform because the provider cannot express their access type. Blocker 2.1."
+  description = "Groups left out of Terraform because the provider cannot express the access type they require."
   value       = module.access_packages.excluded_resource_roles
 }
 
 output "manual_steps_required" {
-  description = "Everything that must be finished outside Terraform for the model to actually hold."
+  description = "What Terraform could not do, with the portal path. Read this before believing an apply."
   value       = module.access_packages.manual_steps_required
 }
 
 output "peer_approval_status" {
-  description = "Whether peer approval is viable per scope, and where a lone systemeier would deadlock."
+  description = "Where the single-systemeier deadlock is resolved and where it is not."
   value       = module.access_packages.peer_approval_status
 }
 
 output "verification_summary" {
-  description = "Counts to compare against the acceptance criteria in section 8 of the steering document."
+  description = "One line per package, for reading a plan quickly."
   value       = module.access_packages.verification_summary
+}
+
+output "contract_version" {
+  description = "The contract version consumed from repo 1."
+  value       = module.access_packages.contract_version
 }

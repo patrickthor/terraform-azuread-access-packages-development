@@ -1,32 +1,37 @@
-# The interesting outputs for this example are the honesty ones. A clean apply does
-# not mean the model holds — read what was left out before believing it.
+# The interesting outputs here are the honesty ones. A clean apply does not mean the
+# model holds — read what was left out before believing it.
 
-output "scopes" {
-  description = "Scopes derived from the fixture. Four, one package each."
-  value       = module.access_packages.scopes
+output "catalogs" {
+  description = "Two catalogs: platform and privileged. Both created, neither adopted, no standing delegation."
+  value       = module.access_packages.catalogs
+}
+
+output "packages_by_catalog" {
+  description = "platform gets jaws, morkanaught and tommer; privileged gets tenant on its own."
+  value       = module.access_packages.packages_by_catalog
 }
 
 output "verification_summary" {
   description = <<-EOT
-    Expected for this fixture: 1 catalog, 4 packages, 11 role groups in the contract,
-    8 attached, 3 excluded, 3 approver groups attached, 14 catalog resource
-    associations, 11 resource package associations.
+    One line per package. Expected for this fixture: tommer 3 roles attached + approver
+    group, morkanaught 3 + approver group, jaws 0 attached and 3 excluded but with its
+    approver group, tenant 2 attached and no approver group.
   EOT
   value       = module.access_packages.verification_summary
 }
 
 output "excluded_resource_roles" {
-  description = "The three aws-jaws-* roles, left out because the provider cannot express EligibleMember."
+  description = "The three aws-jaws-* roles, left out because the provider validates EligibleMember away."
   value       = module.access_packages.excluded_resource_roles
 }
 
 output "manual_steps_required" {
-  description = "What is still needed outside Terraform for this fixture to be a working access model."
+  description = "What is still needed outside Terraform: three portal resource roles, the entra_role PIM rules, and SCIM on the AWS side."
   value       = module.access_packages.manual_steps_required
 }
 
 output "peer_approval_status" {
-  description = "Should show viable = true for tommer, morkanaught and jaws, and false for tenant, which has no approver group."
+  description = "viable = true for tommer, morkanaught and jaws; false for tenant, which has no approver group."
   value       = module.access_packages.peer_approval_status
 }
 
@@ -36,7 +41,7 @@ output "gate_1_approvers" {
 }
 
 output "gate_2_approvers" {
-  description = "Repo 1's per-role approval rules, forwarded. Note the two 'not managed by Terraform' entries on the tenant scope."
+  description = "Republished per role. Note terraform_governs_activation = false on both tenant roles."
   value       = module.access_packages.gate_2_approvers
 }
 

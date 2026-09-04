@@ -1,20 +1,46 @@
 # ==============================================================================
 # Outputs
 #
-# Two jobs here. First, publish what was built. Second, make the gaps loud: the
-# roles Terraform could not express, the gate-2 rules it does not own, and the
-# manual steps that remain. A gap that only exists in a code comment is a gap that
-# gets lost between two repos.
+# This module runs last, so its outputs are the verification surface for the whole
+# system. Two jobs: publish what was built, and make the gaps loud. A gap that exists
+# only in a code comment is a gap that gets lost between two repos.
 # ==============================================================================
 
-output "catalog_id" {
-  description = "ID of the catalog holding every package."
-  value       = module.catalog.catalog_id
+output "catalogs" {
+  description = <<-EOT
+    Label → catalog ID, display name, and whether it was created or adopted.
+
+    `was_adopted = true` means the catalog belongs to someone else and this module only
+    added resources to it. Its description, visibility and published state were left
+    alone.
+  EOT
+  value = {
+    for label, m in module.catalog : label => {
+      catalog_id              = m.catalog_id
+      display_name            = m.display_name
+      was_adopted             = m.was_adopted
+      delegated_to            = keys(m.delegated_role_assignments)
+      delegated_role          = local.catalog_settings[label].systemeier_catalog_role
+      has_standing_delegation = length(m.delegated_role_assignments) > 0
+      scope_keys              = local.v.catalogs[label].scope_keys
+    }
+  }
 }
 
-output "catalog_display_name" {
-  description = "Display name of the catalog, as shown in MyAccess."
-  value       = module.catalog.display_name
+output "packages_by_catalog" {
+  description = <<-EOT
+    Which packages landed in which catalog.
+
+    A catalog is a delegation boundary — whoever holds a catalog role can manage every
+    package inside it — so this is a security-relevant listing rather than a convenience.
+    Read it together with `catalogs.*.delegated_to`.
+  EOT
+  value = {
+    for label in local.catalog_labels : label => {
+      for s in local.v.catalogs[label].scope_keys :
+      s => module.access_package[s].access_package_id
+    }
+  }
 }
 
 output "access_package_ids" {
@@ -27,49 +53,63 @@ output "assignment_policy_ids" {
   value       = { for s, m in module.access_package : s => m.assignment_policy_id }
 }
 
-output "scopes" {
+output "granted_groups_by_package" {
   description = <<-EOT
-    Scopes derived from repo 1's state, one package each. This list is not
-    configured anywhere in repo 2 — if it looks wrong, the state being read is
-    wrong.
+    What each package actually grants, after exclusions, with the access type Terraform
+    set and what the group leads to on the target side.
+
+    `permanent_access = true` is the scope's baseline, active as soon as the assignment
+    lands. Everything else still requires activation at gate 2.
   EOT
-  value       = local.scopes
+  value = {
+    for s in local.scope_keys : s => {
+      for label, role in local.resource_roles_by_scope[s] : label => (
+        contains(keys(local.v.roles), label)
+        ? {
+          group_name        = local.v.roles[label].group_name
+          access_type       = role.access_type
+          jit_mechanism     = local.v.roles[label].jit_mechanism
+          target            = local.v.roles[label].target
+          permanent_access  = local.v.roles[label].permanent_access
+          is_approver_group = false
+        }
+        : {
+          group_name        = local.v.scopes[s].approver_group_name
+          access_type       = role.access_type
+          jit_mechanism     = "n/a"
+          target            = "peer approval rights for the ${s} scope"
+          permanent_access  = true
+          is_approver_group = true
+        }
+      )
+    }
+  }
 }
 
-output "roles_by_scope" {
-  description = "Composite role keys grouped by the package they belong to, including any excluded by blocker 2.1."
-  value       = local.roles_by_scope
-}
-
-output "catalog_resource_association_ids" {
+output "effective_policies" {
   description = <<-EOT
-    Catalog resource association ID per group. Includes groups excluded from
-    Terraform by blocker 2.1, since registration happens for every group regardless
-    of access type.
+    What each package enforces after defaults and scope_overrides were layered. Read this
+    rather than the tfvars when verifying intent — the tfvars show only the deviations.
   EOT
-  value = merge(
-    { for k, a in azuread_access_package_resource_catalog_association.role_group : k => a.id },
-    { for s, a in azuread_access_package_resource_catalog_association.approver_group : "${s}--approvers" => a.id },
-  )
+  value       = { for s, m in module.access_package : s => m.effective_policy }
 }
 
 # ------------------------------------------------------------------------------
-# Gate 1 — what this repo owns
+# The two gates
 # ------------------------------------------------------------------------------
 
 output "gate_1_approvers" {
   description = <<-EOT
-    Who approves the request to enter each scope, resolved from
-    systemeier_by_scope. This is the only approval gate repo 2 owns.
+    Per package, the systemeier acting as named approvers. This is the only approval gate
+    this module owns.
 
-    A scope showing exactly one approver is workable at gate 1 — a systemeier can
-    approve someone else's request — but see peer_approval_status for why one is not
-    enough at gate 2.
+    One approver is workable at gate 1 — a systemeier can approve someone else's request.
+    See peer_approval_status for why one is not enough at gate 2.
   EOT
   value = {
-    for s in local.scopes : s => {
-      systemeier_upns = local.v.systemeier_by_scope[s]
-      object_ids      = [for upn in local.v.systemeier_by_scope[s] : data.azuread_user.systemeier[upn].object_id]
+    for s in local.scope_keys : s => {
+      systemeier_upns = local.v.scopes[s].systemeier
+      object_ids      = [for upn in local.v.scopes[s].systemeier : data.azuread_user.systemeier[upn].object_id]
       subject_type    = "singleUser"
       stage_count     = 1
       timeout_days    = local.effective[s].approval_timeout_days
@@ -77,119 +117,113 @@ output "gate_1_approvers" {
   }
 }
 
-output "effective_policies" {
+output "gate_2_approvers" {
   description = <<-EOT
-    What each package actually enforces, after defaults and scope_overrides were
-    layered. Read this rather than the tfvars when verifying intent — the tfvars
-    show only the deviations.
-  EOT
-  value       = { for s, m in module.access_package : s => m.effective_policy }
-}
+    Repo 1's activation rules, republished per role and interpreted nowhere. Gate 2 is
+    whether someone may hold a privilege right now, and repo 1 owns it.
 
-output "granted_groups_by_package" {
-  description = "Groups each package actually grants, with the access type Terraform set."
+    Note what the contract does and does not carry. It gives the mechanism, whether access
+    is permanent, and the expiry ceiling — enough to see where activation applies and where
+    Terraform governs it at all. It does not carry repo 1's per-role `approval_type`, so
+    this output cannot name the gate-2 approver for an individual role. The scope's
+    systemeier and approver group are listed because those are the two pools repo 1 draws
+    from, not because this module worked out which applies.
+
+    `terraform_governs_activation = false` means an Entra directory role, for which the
+    azuread provider has no policy resource at all. For those, gate 1 is the only gate
+    Terraform enforces — but "no approval from Terraform" means "governed by tenant admins
+    outside Terraform", since active Privileged Role Administrator and Global Administrator
+    do act as default approvers. It does not mean the role is open.
+  EOT
   value = {
-    for s in local.scopes : s => {
-      for label, role in local.resource_roles_by_scope[s] : label => {
-        group_name        = try(local.v.group_names[label], try(local.v.approver_group_names[s], "approver group for ${s}"))
-        access_type       = role.access_type
-        is_approver_group = contains(local.approver_group_scopes, s) && label == try(local.approver_role_label[s], "")
-      }
+    for k, r in local.v.roles : k => {
+      scope                        = r.scope
+      role                         = r.role
+      jit_mechanism                = r.jit_mechanism
+      permanent_access             = r.permanent_access
+      requires_activation          = !r.permanent_access
+      target                       = r.target
+      max_assignment_days          = r.max_assignment_days
+      terraform_governs_activation = r.jit_mechanism != "entra_role"
+      approver_pool_systemeier     = local.v.scopes[r.scope].systemeier
+      approver_pool_group          = local.v.scopes[r.scope].approver_group_name
     }
   }
 }
 
 # ------------------------------------------------------------------------------
-# Gate 2 — what repo 1 owns, republished so both gates are visible at once
-# ------------------------------------------------------------------------------
-
-output "gate_2_approvers" {
-  description = <<-EOT
-    Repo 1's approvers_by_role, forwarded verbatim. Repo 2 does not implement or
-    interpret gate 2 — PIM activation approval is built in repo 1 — but publishing
-    it here means one `terraform output` shows a user's whole journey.
-
-    A value of "not managed by Terraform" means the role is an Entra directory role
-    whose activation rules the azuread provider cannot set. For those, gate 1 is the
-    only Terraform-enforced control. See trap 6.7.
-  EOT
-  value       = local.v.approvers_by_role
-}
-
-output "entra_activation_governance_gap" {
-  description = <<-EOT
-    Repo 1's report of what it cannot manage for entra_role (M4) roles, forwarded so
-    the gap does not fall between the two repos. Trap 6.4.
-  EOT
-  value       = local.v.entra_activation_governance_gap
-}
-
-# ------------------------------------------------------------------------------
-# The gaps — blocker 2.1 and the manual steps
+# The gaps
 # ------------------------------------------------------------------------------
 
 output "excluded_resource_roles" {
   description = <<-EOT
-    Groups deliberately left out of Terraform because their required access type is
-    "EligibleMember", which the azuread provider cannot express. Empty when
+    Per-group detail for the roles left out of Terraform because their required access type
+    is "EligibleMember", which the azuread provider validates away. Empty when
     manage_pim_for_groups_roles is true.
 
-    Blocker 2.1, option 1. These are not forgotten and not broken — they are the
-    honest split. Each one still needs its resource role added by hand.
+    These are not forgotten and not broken — they are the honest split. Each still needs its
+    resource role added by hand.
   EOT
   value       = local.excluded_resource_roles
 }
 
 output "manual_steps_required" {
   description = <<-EOT
-    Everything that must be finished outside Terraform for the model to actually
-    hold. An empty list would be a lie in this tenant; read it before declaring the
-    POC done.
+    What Terraform could not do, with the portal path. An empty list would be a lie in most
+    tenants; read this before believing an apply.
   EOT
   value = concat(
     length(local.excluded_role_keys) == 0 ? [] : [
       <<-EOT
-        Add ${length(local.excluded_role_keys)} resource role(s) by hand, in Identity Governance → Catalogs → ${var.catalog_display_name} → the package named below → Resource roles.
-        Pick "Eligible Member", NOT "Member". The groups are already registered as catalog resources, so they will appear in the picker immediately.
-        ${join("\n", [for k, r in local.excluded_resource_roles : "  package '${r.access_package}' ← group '${r.group_name}' as ${r.required_access_type}"])}
-        Verify afterwards that the user is eligible and not active: an active membership means blocker 2.1 bit you anyway.
+        Add ${length(local.excluded_role_keys)} resource role(s) by hand, in Identity Governance → Catalogs → the catalog named below → Access packages → the package named below → Resource roles.
+        Pick "Eligible Member", NOT "Member". The groups are already registered as catalog resources, so they appear in the picker immediately.
+        ${join("\n", [for k, r in local.excluded_resource_roles : "  catalog '${r.catalog}' / package '${r.access_package}' ← group '${r.group_name}' as ${r.required_access_type}  (${r.cloud}, grants ${r.target})"])}
+        Verify afterwards that the user is eligible and NOT active. An active membership means the gap bit you anyway.
       EOT
     ],
-    length(local.m3_scopes) == 0 ? [] : [
-      "Confirm repo 1's active_assignment_expire_after for the pim_for_groups groups in scope(s) ${join(", ", local.m3_scopes)} is at least ${var.m3_max_duration_days} days. This module enforces the ceiling it was told about, not the value repo 1 actually set.",
+    [
+      for label in local.catalog_labels : "Catalog '${local.catalog_settings[label].display_name}' is adopted, not created. Confirm its owner is content for these packages to live there, and that its published and externally_visible settings match this system's assumptions — this module deliberately does not change them."
+      if local.catalog_settings[label].adopt_existing
     ],
     [
-      for s in local.scopes : "Set PIM activation rules (MFA, approval, maximum duration) by hand for the entra_role roles in scope '${s}'. The azuread provider has no resource for directory role management policies, so gate 1 is the only control Terraform enforces on this package. Trap 6.7."
-      if length([for k in local.roles_by_scope[s] : k if local.v.jit_mechanism[k] == "entra_role"]) > 0
+      for label in local.catalog_labels : "Catalog '${local.catalog_settings[label].display_name}' has standing '${local.catalog_settings[label].systemeier_catalog_role}' rights delegated to ${length(local.catalog_delegated_upns[label])} systemeier. This is the one non-expiring, non-activated grant in the system. Review it as you would a permanent role assignment."
+      if length(local.catalog_delegated_upns[label]) > 0
     ],
     [
-      for s in keys(local.v.approver_group_object_ids) : "Add a second member to the approver group for scope '${s}'. It has ${length(local.v.systemeier_by_scope[s])} systemeier, and PIM blocks self-approval, so dual-approval roles there cannot be activated by that person alone."
-      if length(local.v.systemeier_by_scope[s]) < 2 && !var.defaults.grant_approver_group
+      for s in local.scope_keys : "Set PIM activation rules (MFA, approval, maximum duration) by hand for the entra_role roles in scope '${s}': ${join(", ", [for k in local.v.scopes[s].role_keys : local.v.roles[k].target if local.v.roles[k].jit_mechanism == "entra_role"])}. The azuread provider has no resource for directory role management policies, so gate 1 is the only control Terraform enforces on this package."
+      if length([for k in local.v.scopes[s].role_keys : k if local.v.roles[k].jit_mechanism == "entra_role"]) > 0
+    ],
+    [
+      for s in local.scope_keys : "Complete SCIM provisioning for scope '${s}' on the ${local.v.scopes[s].cloud} side. Terraform stops at the tenant boundary: the group exists and is PIM-managed, but nothing connects it to the target cloud."
+      if length([for k in local.v.scopes[s].role_keys : k if local.v.roles[k].jit_mechanism == "pim_for_groups"]) > 0
+    ],
+    [
+      for s in local.scope_keys : "Add a second member to the approver group '${local.v.scopes[s].approver_group_name}' for scope '${s}'. It has ${length(local.v.scopes[s].systemeier)} systemeier, and PIM blocks self-approval, so dual-approval roles there cannot be activated by that person alone."
+      if local.v.scopes[s].approver_group_name != null && length(local.v.scopes[s].systemeier) < 2 && !var.defaults.grant_approver_group
     ],
   )
 }
 
 output "peer_approval_status" {
   description = <<-EOT
-    Whether the peer-approval model from section 4.3 is actually viable per scope.
+    Where the single-systemeier deadlock is resolved and where it is not.
 
-    `viable` means the scope's package grants approver-group membership, so anyone
-    assigned the package can approve a peer's activation. `deadlock_risk` means the
-    approver group has fewer than two members and nothing in this configuration adds
-    more, so a lone systemeier cannot activate their own dual role.
+    `viable` means the scope's package grants approver-group membership, so anyone holding
+    the package can approve a peer's activation. `deadlock_risk` means the approver group has
+    fewer than two members and nothing here adds more, so a lone systemeier cannot activate
+    their own dual-approval role.
   EOT
   value = {
-    for s in local.scopes : s => {
-      has_approver_group      = contains(keys(local.v.approver_group_object_ids), s)
-      approver_group_name     = try(local.v.approver_group_names[s], null)
-      managed_outside_vending = try(local.v.approver_group_is_managed_here[s], null) == false
-      granted_by_package      = contains(local.approver_group_scopes, s)
-      systemeier_count        = length(local.v.systemeier_by_scope[s])
-      viable                  = contains(local.approver_group_scopes, s)
+    for s in local.scope_keys : s => {
+      has_approver_group  = local.v.scopes[s].approver_group_name != null
+      approver_group_name = local.v.scopes[s].approver_group_name
+      granted_by_package  = contains(local.approver_group_scopes, s)
+      systemeier_count    = length(local.v.scopes[s].systemeier)
+      viable              = contains(local.approver_group_scopes, s)
       deadlock_risk = (
-        contains(keys(local.v.approver_group_object_ids), s)
+        local.v.scopes[s].approver_group_name != null
         && !contains(local.approver_group_scopes, s)
-        && length(local.v.systemeier_by_scope[s]) < 2
+        && length(local.v.scopes[s].systemeier) < 2
       )
     }
   }
@@ -197,21 +231,27 @@ output "peer_approval_status" {
 
 output "verification_summary" {
   description = <<-EOT
-    One-glance check against the acceptance criteria in section 8. Compare the
-    counts here with what repo 1 vended before trusting the apply.
+    One line per package, for reading a plan quickly and for checking the result against
+    what repo 1 vended.
   EOT
   value = {
-    catalogs_created                 = 1
-    packages_created                 = length(local.scopes)
-    role_groups_in_contract          = length(local.role_keys)
-    role_groups_attached             = length(local.managed_role_keys)
-    role_groups_excluded             = length(local.excluded_role_keys)
-    approver_groups_attached         = length(local.approver_group_scopes)
-    catalog_resource_associations    = length(local.v.group_object_ids) + length(local.approver_group_scopes)
-    resource_package_associations    = length(local.managed_role_keys) + length(local.approver_group_scopes)
-    assignment_policies              = length(local.scopes)
-    m3_scopes                        = local.m3_scopes
-    m3_expiry_ceiling_days           = var.m3_max_duration_days
-    eligibility_downgraded_to_active = var.manage_pim_for_groups_roles
+    for s in local.scope_keys : s => {
+      catalog                 = local.catalog_of_scope[s]
+      cloud                   = local.v.scopes[s].cloud
+      roles_in_scope          = length(local.v.scopes[s].role_keys)
+      roles_attached          = length(local.managed_roles_by_scope[s])
+      roles_excluded          = length([for k in local.v.scopes[s].role_keys : k if contains(local.excluded_role_keys, k)])
+      approver_group_attached = contains(local.approver_group_scopes, s)
+      resource_roles_total    = length(local.resource_roles_by_scope[s])
+      duration_days           = local.effective[s].assignment_duration_days
+      expiry_ceiling_days     = local.ceiling_by_scope[s]
+      gate_1_approver_count   = length(local.v.scopes[s].systemeier)
+      gate_2_unmanaged_roles  = [for k in local.v.scopes[s].role_keys : local.v.roles[k].role if local.v.roles[k].jit_mechanism == "entra_role"]
+    }
   }
+}
+
+output "contract_version" {
+  description = "The contract version this module consumed, echoed so a mismatch is visible in outputs as well as in errors."
+  value       = local.v.contract_version
 }

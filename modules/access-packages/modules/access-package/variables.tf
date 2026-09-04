@@ -59,8 +59,8 @@ variable "resource_roles" {
       just-in-time access the model promises.
 
       Roles that need eligible membership (jit_mechanism = "pim_for_groups") are
-      excluded from Terraform and listed in the excluded_roles output instead. See
-      blocker 2.1 in ASSIGNMENT-2-STEERING.md.
+      excluded from Terraform by the calling module and listed in its
+      excluded_resource_roles output instead.
     EOT
   }
 

@@ -1,33 +1,52 @@
-# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored here; in a
+# customer root it is committed, because for an access system the configuration IS the
+# governance record.
 #
-# Note what is NOT here: no scope list, no role list, no group names. Those are read
-# from repo 1's state. Adding a scope or a role in repo 1 and re-applying repo 2
-# picks it up with no change to this file.
+# Note what is NOT here: no scope list, no role list, no group name, no catalog label.
+# All of it comes from repo 1's contract. Adding a scope, a role or a catalog in repo 1
+# and re-applying picks it up with no change to this file.
 #
 # Field reference: modules/access-packages/README.md
 
 tenant_id = "8aacb043-2429-460e-b9d1-d81459e9330e"
 
-catalog_display_name = "Cloud Access"
-
-# Where repo 1's state lives, so the taxonomy can be read. The deploy identity needs
-# Storage Blob Data Reader on this storage account.
+# Where repo 1's state lives, so the contract can be read. Only needed by this
+# split-state root — a customer using the reference architecture calls both modules from
+# one root and needs none of these three.
 state_resource_group_name  = "rg-tfstate-poc"
 state_storage_account_name = "sttfstatepocbvt"
 vending_state_key          = "access-vending.tfstate"
 
+# Optional. A catalog label with no entry here gets a catalog named after the label,
+# created rather than adopted, published, and not externally visible.
+catalogs = {
+  "platform" = {
+    display_name = "Cloud Access"
+  }
+
+  # The tenant scope hands out Groups Administrator. Its own catalog keeps it visible in
+  # a listing rather than buried among ordinary cloud access.
+  "privileged" = {
+    display_name = "Privileged Directory Access"
+  }
+}
+
 defaults = {
-  assignment_duration_days = 14   # keep <= m3_max_duration_days for scopes with pim_for_groups roles
+  assignment_duration_days = 14
   requestor_scope_type     = "AllExistingDirectoryMemberUsers"
   require_justification    = true
   approval_timeout_days    = 7
-  grant_approver_group     = true # option A: the package also grants peer-approval rights
+
+  # The package also grants the scope's approver group, making everyone in the scope a
+  # peer approver. Resolves the deadlock where a lone systemeier cannot approve their own
+  # activation request.
+  grant_approver_group = true
 }
 
 # Only where you deviate from defaults.
 scope_overrides = {
-  # The tenant scope hands out Groups Administrator, and Terraform cannot set that
-  # role's activation rules at all, so gate 1 is the only control it enforces. Short
-  # duration is the mitigation available here.
+  # Terraform can set no activation rules for Entra directory roles, so gate 1 is the
+  # only control it enforces on this package. A short duration is the mitigation
+  # available in code.
   "tenant" = { assignment_duration_days = 7 }
 }

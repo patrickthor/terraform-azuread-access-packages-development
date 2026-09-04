@@ -119,8 +119,8 @@ Package "tommer junior":  role group only               → cannot approve anyon
 **Two approval stages are only possible here.** Both PIM policy schemas cap
 `approval_stage` at `max_items = 1`, so repo 1's `dual` puts the system owner and
 the approver group in the *same* stage — one signature from either pool is enough.
-Genuine sequential approval has to live on the access package request. See section
-4.2 of `ASSIGNMENT-2-STEERING.md`.
+Genuine sequential approval has to live on the access package request, which is why
+this module accepts up to two `approval_stages`.
 
 **`EligibleMember` is rejected, not accepted-and-ignored.** The Entra platform
 supports it for PIM-managed groups; the `azuread` provider does not. Passing it

@@ -1,14 +1,16 @@
 # Example: `complete`
 
-Exercises every mechanism on local state, with **no dependency on repo 1**.
+Exercises every mechanism and two catalogs on local state, with **no dependency on repo 1**.
 
-The contract that the root module reads from repo 1's remote state is inlined in
-`main.tf` as a literal fixture. That is the point of this example: the module takes
-the taxonomy as a plain input, so it can be validated and planned without a storage
-account, without `Storage Blob Data Reader`, and without repo 1 having been applied.
+Repo 1's contract is inlined in `main.tf` as a literal fixture. That is the point: the module
+takes the contract as a plain typed object, so it can be validated and planned without repo 1
+having been applied, without a storage account, and without any state-reading permission.
 
-It doubles as executable documentation of the contract shape. If repo 1 changes an
-output, this fixture is the first place the mismatch shows up.
+It doubles as executable documentation of the contract. If repo 1 changes an output, this
+fixture is the first place the mismatch shows up.
+
+For the architecture a customer should actually copy — one root, both modules, contract in
+memory — see `examples/two-module-root`.
 
 ## Running it
 
@@ -19,70 +21,63 @@ terraform validate
 terraform plan
 ```
 
-`validate` works offline. `plan` needs a real tenant, and will fail on the
-`data "azuread_user"` lookup because the fixture's systemeier are
-`@example.onmicrosoft.com` placeholders. Substitute real UPNs to plan for real —
-against a throwaway catalog name, since the group object IDs are placeholders too.
+`validate` works offline. `plan` needs a real tenant and will fail on the
+`data "azuread_user"` lookup, because the fixture's systemeier are
+`@example.onmicrosoft.com` placeholders. Substitute real UPNs to plan for real — against
+throwaway catalog names, since the group object IDs are placeholders too.
 
 ## The fixture
 
-Mirrors the POC tenant: 11 role groups across 4 scopes, spanning all three JIT
-mechanisms, plus 3 approver groups.
+11 role groups across 4 scopes, all three JIT mechanisms, two catalogs.
 
-| Scope | Roles | Mechanism | Approver group |
-|---|---|---|---|
-| `tommer` | readingbooks, contriband, master | `azure_pim` | yes, 2 systemeier |
-| `morkanaught` | reader, blob-leser, nettverksdrift | `azure_pim` | yes, 1 systemeier |
-| `jaws` | admin, readonly, billing | `pim_for_groups` | yes, 1 systemeier |
-| `tenant` | groupsadmin, directoryreader | `entra_role` | no |
+| Scope | Catalog | Roles | Mechanism | Approver group | Systemeier |
+|---|---|---|---|---|---|
+| `tommer` | platform | readingbooks, contriband, master | `azure_pim` | yes | 2 |
+| `morkanaught` | platform | reader, blob-leser, nettverksdrift | `azure_pim` | yes | 1 |
+| `jaws` | platform | admin, readonly, billing | `pim_for_groups` | yes | 1 |
+| `tenant` | **privileged** | groupsadmin, directoryreader | `entra_role` | no | 1 |
 
 ## Expected outcome
 
-```
-verification_summary = {
-  catalogs_created              = 1
-  packages_created              = 4
-  role_groups_in_contract       = 11
-  role_groups_attached          = 8
-  role_groups_excluded          = 3
-  approver_groups_attached      = 3
-  catalog_resource_associations = 14
-  resource_package_associations = 11
-  assignment_policies           = 4
-  m3_scopes                     = ["jaws"]
-}
-```
+Four things in the output are worth understanding rather than glossing over.
 
-Three things in that output are worth understanding rather than glossing over.
+**`jaws` attaches 0 of its 3 roles.** They need `EligibleMember`, which the provider
+validates away, so they are excluded and reported in `excluded_resource_roles` instead of
+being silently downgraded to standing membership. Its package therefore grants **only its
+approver group** — check `granted_groups_by_package`. That is the honest consequence on an
+all-`pim_for_groups` scope, and `manual_steps_required` names the three portal steps that
+complete it.
 
-**8 attached out of 11.** The three `aws-jaws-*` roles need `EligibleMember`, which
-the `azuread` provider cannot set, so they are excluded and reported in
-`excluded_resource_roles` instead of being silently downgraded to standing active
-membership. Blocker 2.1, option 1.
+**`tenant` sits in its own catalog.** It hands out `Groups Administrator`, which can manage
+membership in every non-role-assignable group in the tenant — *including* all the groups
+repo 1 creates — and rewrite their PIM policies. Terraform can set no activation rules for
+directory roles, so gate 1 is the only gate it enforces. A separate catalog keeps it visible
+in a listing, and a 7-day duration is the other mitigation available in code.
 
-**The `jaws` package grants only its approver group.** Every role in that scope was
-excluded, so the only resource role left is `aws-jaws-approvers`. Check
-`granted_groups_by_package` and you will see it. That is the honest consequence of
-option 1 on an all-M3 scope, and `manual_steps_required` tells you exactly which
-three resource roles to add in the portal to complete it.
+**`jaws`'s ceiling is 15 days, not 30.** `jaws--billing` carries
+`max_assignment_days = 15` while the other two carry 30, and the ceiling is the minimum
+across the scope. `verification_summary.jaws.expiry_ceiling_days` shows it.
 
-**`tenant` gets 7 days, not 14.** Trap 6.7: that package hands out `Groups
-Administrator`, and Terraform can set no activation rules for directory roles at all,
-so gate 1 is the only control it enforces. A short duration is the mitigation
-available in code.
+**`gate_2_approvers` shows `terraform_governs_activation = false`** for both `tenant` roles.
+That does not mean those roles are open: active Privileged Role Administrator and Global
+Administrator act as default approvers on Entra role activation. It means governed outside
+Terraform, by tenant admins.
 
 ## Things to try
 
-Each of these should **fail the plan**, which is the behaviour worth verifying:
+Each should **fail the plan**, which is the behaviour worth verifying:
 
 | Change | Expected failure |
 |---|---|
-| `grant_approver_group = false` | `jaws` would grant nothing at all — `validate_packages_grant_something` |
-| `assignment_duration_days = 60` | `jaws` breaches the 30-day M3 ceiling — `validate_m3_expiry_ceiling` |
-| `manage_pim_for_groups_roles = true` alone | Requires `acknowledge_m3_active_membership` — variable validation |
-| Rename `"tenant"` in `scope_overrides` to `"tenat"` | Unknown scope — `validate_derivation` |
-| Empty a `systemeier_by_scope` list | Gate 1 unsatisfiable — `validate_gate_1_approvers` |
+| `grant_approver_group = false` | `jaws` would grant nothing — `validate_packages_grant_something` |
+| `assignment_duration_days = 20` | `jaws` breaches its 15-day ceiling, error names `jaws--billing` — `validate_assignment_expiry_ceiling` |
+| `manage_pim_for_groups_roles = true` alone | Requires the acknowledgement — variable validation |
+| Add `"platfrom" = {}` to `catalogs` | Unknown catalog label — `validate_configuration` |
+| Rename `"tenant"` in `scope_overrides` to `"tenat"` | Unknown scope — `validate_configuration` |
+| Empty a scope's `systemeier` list | Gate 1 unsatisfiable — `validate_gate_1_approvers` |
+| Point `morkanaught` and `jaws` at the same `approver_group_name` | Duplicate `(catalog, group)` — `validate_no_duplicate_catalog_resources` |
+| Set `contract_version = 2` | Version mismatch — variable validation |
 
-Setting `manage_pim_for_groups_roles = true` **with** the acknowledgement moves
-`role_groups_attached` to 11 and `resource_package_associations` to 14 — full IaC
-coverage, at the cost of turning `jaws` eligibility into standing access.
+Setting `manage_pim_for_groups_roles = true` **with** the acknowledgement moves `jaws` to 3
+roles attached and 0 excluded — full IaC coverage, at the cost of turning its eligibility
+into standing AWS access.

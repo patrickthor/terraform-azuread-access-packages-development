@@ -23,22 +23,27 @@ GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"
 # Missing permissions surface as a 403 on the first apply and are the single most
 # common blocker on this repo.
 #
-# If you run both repos with the SAME service principal — which is recommended, see
-# trap 6.5 — also run repo 1's bootstrap/grant-graph-permissions.sh. It grants
+# ONE IDENTITY RUNS BOTH MODULES. That is not a convenience: repo 1's identity owns
+# every group it creates, and azuread_access_package_resource_catalog_association fails
+# with CallerNotResourceOwner when the caller does not own the group being linked. A
+# separate identity for repo 2 would need group ownership or Catalog owner on top.
+#
+# So in practice you run this script AND repo 1's, against the same app. Repo 1 needs
 # Group.ReadWrite.All, RoleManagementPolicy.ReadWrite.AzureADGroup and
-# PrivilegedEligibilitySchedule.ReadWrite.AzureADGroup, which repo 2 does not need.
+# PrivilegedEligibilitySchedule.ReadWrite.AzureADGroup, which repo 2 does not.
 PERMISSIONS=(
   # Catalogs, access packages, assignment policies, resource roles.
   "EntitlementManagement.ReadWrite.All"
 
-  # Group lookups. The catalog resource association needs write access to the
-  # package, not to the group, so read is enough here.
-  "Group.Read.All"
-
-  # data "azuread_user" for the systemeier who approve at gate 1. Without this the
-  # plan fails on the user lookup before it creates anything, which at least fails
-  # loudly rather than silently.
+  # data "azuread_user" for the systemeier who approve at gate 1. Without it the plan
+  # fails on the user lookup before creating anything, which at least fails loudly.
+  #
+  # Also needed by repo 1, for the same systemeier.
   "User.Read.All"
+
+  # Group.Read.All is deliberately NOT here. Repo 2 no longer looks groups up by name —
+  # every group object ID arrives in repo 1's contract, so there is nothing to read.
+  # Granting it anyway would be tenant-wide group read for no reason.
 )
 
 echo "Looking up the service principal for app ${APP_ID}..."
@@ -90,11 +95,17 @@ echo
 echo "Done. Verify in the Entra portal under App registrations >"
 echo "${APP_ID} > API permissions that everything shows as 'Granted'."
 echo
-echo "This repo also needs Storage Blob Data Reader on repo 1's state storage"
-echo "account, which is an Azure RBAC role rather than a Graph permission and is"
-echo "not granted by this script:"
+echo "Admin consent cannot be automated, and should not be: a pipeline able to grant"
+echo "itself tenant-wide group write is a privilege-escalation path."
+echo
+echo "Azure RBAC is separate and not granted by this script. The root config needs"
+echo "Storage Blob Data Contributor on the account holding its own state:"
 echo
 echo "  az role assignment create \\"
 echo "    --assignee ${APP_ID} \\"
-echo "    --role 'Storage Blob Data Reader' \\"
+echo "    --role 'Storage Blob Data Contributor' \\"
 echo "    --scope \"\$(az storage account show -n <state-account> -g <state-rg> --query id -o tsv)\""
+echo
+echo "The split-state root in this repo additionally reads repo 1's state. If that lives"
+echo "in a different account, Storage Blob Data Reader on it is enough. The reference"
+echo "two-module root needs neither, because the contract never touches a state file."

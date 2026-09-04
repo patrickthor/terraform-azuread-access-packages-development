@@ -1,5 +1,32 @@
 # Assignment 2 — Access Packages Repo: Steering Document
 
+> ## ⚠ SUPERSEDED — kept for history, do not build from this file
+>
+> The authoritative steering is now the pair in `.kiro/steering/`:
+>
+> - `identity-governance-contract.md` — the interface, shared byte-identically with repo 1
+> - `access-packages-module.md` — this repo's brief
+>
+> Several recommendations below were **reversed** by those files. Following this document
+> would undo working code:
+>
+> | This file says | Now |
+> |---|---|
+> | Consume repo 1 via `terraform_remote_state`, twelve separate outputs | One `contract` object, passed in memory in one root config. Remote state only in a root, never a module, and only for the split-state variant |
+> | One catalog (§12 Q4) | One per catalog **label** from the contract, with create-or-adopt and optional delegation |
+> | `m3_max_duration_days`, a locally configured ceiling (trap 6.1) | `max_assignment_days` per role, emitted by repo 1 as a number |
+> | Derive scopes with `distinct([for k in keys(group_names) : split("--", k)[0]])` (§5.4) | Iterate the contract's own `scopes`, `catalogs`, `role_keys` and `scope_keys` — plan-time-safe by construction |
+> | Eleven cross-map key-consistency validations | Three. The rest are type errors now, which are better errors |
+> | `examples/github-consumption` (§5.1) | `examples/two-module-root` — the reference architecture |
+> | `try()` around gate-2 passthrough fields | Never `try()` a contract field; `contract_version` handles compatibility |
+>
+> What carried over unchanged: one package per scope, gate 1 = `systemeier` and gate 2 =
+> repo 1, `terraform_data` preconditions over `check` blocks, the two-flag `EligibleMember`
+> downgrade, registering excluded groups as catalog resources anyway, and reject-never-ignore.
+>
+> The blocker analysis in §2, the traps in §6 and the test plan in §9 are still useful
+> reading — the *facts* about the platform have not changed, only the design built on them.
+
 > **How to use this file.** Copy it into the access-package repo as
 > `.kiro/steering/access-packages.md` (front matter `inclusion: always`), or paste
 > it into the agent as the opening brief. It is written to be self-contained:

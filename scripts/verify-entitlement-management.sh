@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Blocker 2.2 — does this tenant allow Entitlement Management on P2 alone?
+# Does this tenant allow Entitlement Management on P2 alone?
 #
 # Microsoft Learn states that using PIM for Groups together with access packages
 # requires Microsoft Entra ID Governance or Entra Suite licensing. The POC tenant has
 # P2 only. If Entitlement Management is unavailable, nothing in this repo can be
 # applied, so this is the first thing to check.
 #
-# The probe also narrows blocker 2.1. If a catalog can be created but an
-# eligible-member resource role is rejected, the EligibleMember problem is a
-# licensing limit rather than only a provider gap — and option 2 (azapi / az rest)
-# would not rescue it.
+# The probe also narrows the EligibleMember question. If a catalog can be created but an
+# eligible-member resource role is rejected at the platform level, that gap is a licensing
+# limit rather than only the azuread provider's schema allowlist — and neither the msgraph
+# spike nor the manual portal step would rescue it.
 #
 # Read-only apart from step 3, which creates a catalog and then deletes it again.
 # Pass --no-write to skip that step.
@@ -32,7 +32,7 @@ fail() { printf '  FAIL  %s\n' "$1"; }
 info() { printf '  ..    %s\n' "$1"; }
 
 echo "=============================================================="
-echo "Entitlement Management availability probe (blocker 2.2)"
+echo "Entitlement Management availability probe"
 echo "=============================================================="
 echo
 
@@ -51,8 +51,8 @@ echo
 # --------------------------------------------------------------------------------
 echo "2. Licensing — is Governance or Entra Suite present?"
 # --------------------------------------------------------------------------------
-# Service plan names to look for. AAD_PREMIUM_P2 alone is the case the blocker is
-# about; the Governance plans are what Microsoft says is actually required.
+# Service plan names to look for. AAD_PREMIUM_P2 alone is the case in question; the
+# Governance plans are what Microsoft says eligible group membership actually requires.
 if SKUS="$(az rest --method GET --uri "${GRAPH}/subscribedSkus" \
   --query "value[].{sku:skuPartNumber,plans:servicePlans[].servicePlanName}" \
   --output json 2>/dev/null)"; then
@@ -128,7 +128,7 @@ echo
 # --------------------------------------------------------------------------------
 echo "4. Which resource role types does the tenant offer for a PIM-managed group?"
 # --------------------------------------------------------------------------------
-# This is the blocker 2.1 question. The Entra platform is documented to offer
+# This is the EligibleMember question. The Entra platform is documented to offer
 # "Eligible Member" for groups onboarded to PIM for Groups, while the azuread
 # provider accepts only Member and Owner. If the platform does not offer it either,
 # the cause is licensing rather than the provider and option 2 would not help.
@@ -140,14 +140,14 @@ echo "      \"${GRAPH}/identityGovernance/entitlementManagement/catalogs/<catalo
 echo
 echo "  Look at the displayName values in the response:"
 echo "    'Member' and 'Owner' only     → the platform agrees with the provider;"
-echo "                                     blocker 2.1 is a licensing limit"
+echo "                                     the limit is licensing, not the provider"
 echo "    'Eligible Member' also present → the platform supports it and the gap is"
 echo "                                     purely the Terraform provider, so the"
 echo "                                     portal workaround in option 1 will work"
 echo
 
 echo "=============================================================="
-echo "Record the outcome in README.md under 'Verified in this tenant'."
-echo "Open question 1 and 2 in section 12 of the steering document both"
-echo "depend on it."
+echo "Record the outcome in README.md under 'Verified in this tenant', and leave the"
+echo "row blank until it is actually verified. A blank row is an honest unverified"
+echo "claim; a filled-in row nobody tested is not."
 echo "=============================================================="

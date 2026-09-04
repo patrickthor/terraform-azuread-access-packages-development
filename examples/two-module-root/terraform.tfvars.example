@@ -1,0 +1,43 @@
+# In a real customer root this file is COMMITTED, not gitignored. For an access system the
+# configuration is the governance record: it is the reviewable answer to "who may reach
+# what". It holds no secrets — object IDs and UPNs are not credentials.
+
+tenant_id = "8aacb043-2429-460e-b9d1-d81459e9330e"
+
+# Stage the rollout by flipping this to false: groups, RBAC and PIM policies get vended,
+# the request layer waits until the licensing question is settled.
+enable_access_packages = true
+
+default_catalog = "platform"
+
+catalogs = {
+  "platform" = {
+    display_name = "Cloud Access"
+  }
+}
+
+defaults = {
+  assignment_duration_days = 14
+  approval_timeout_days    = 7
+  grant_approver_group     = true
+}
+
+scope_overrides = {}
+
+# In the real thing, this is the one place the access taxonomy is described, and repo 1
+# turns it into groups, RBAC bindings and PIM policies. Repo 2 needs no equivalent block:
+# it derives everything from the contract repo 1 emits.
+#
+# access_scopes = {
+#   "sandbox" = {
+#     cloud      = "azure"
+#     scope_id   = "/subscriptions/33333333-3333-3333-3333-333333333333"
+#     systemeier = ["patrick@example.onmicrosoft.com", "edgar@example.onmicrosoft.com"]
+#     catalog    = "platform"
+#
+#     roles = {
+#       "reader"      = { target = "Reader", permanent_access = true }
+#       "contributor" = { target = "Contributor", approval_type = "dual" }
+#     }
+#   }
+# }
