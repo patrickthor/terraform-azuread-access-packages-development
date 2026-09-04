@@ -49,6 +49,20 @@ variable "adopt_existing" {
       refuses. Drop the description, or create the catalog instead of adopting it.
     EOT
   }
+
+  validation {
+    condition     = var.adopt_existing == true || var.description != null
+    error_message = <<-EOT
+      description is required when creating a catalog.
+
+      azuread_access_package_catalog.description is a required provider argument, so a
+      null here fails the apply with "The argument description is required" — after the
+      plan looked clean.
+
+      The parent access-packages module supplies a default derived from the catalog
+      label, so seeing this means this leaf module was called directly.
+    EOT
+  }
 }
 
 variable "delegated_principals" {

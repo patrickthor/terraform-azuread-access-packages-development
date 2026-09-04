@@ -136,7 +136,7 @@ contract **fails the plan**.
 | Field | Default | Notes |
 |---|---|---|
 | `display_name` | the label | |
-| `description` | `null` | Rejected together with `adopt_existing` |
+| `description` | generated from the label | Required by the provider when creating, so it is defaulted rather than left null. Must be unset when adopting |
 | `externally_visible` | `false` | Every scope here grants cloud access; none is for guests |
 | `published` | `true` | |
 | `adopt_existing` | `false` | Look the catalog up instead of creating it |
@@ -152,6 +152,13 @@ team should own its own packages.
 Everything downstream is identical; only the source of the catalog ID changes. The
 catalog's own settings stay with whoever owns it, which is why setting `description`
 alongside it is rejected rather than ignored.
+
+That interacts with a provider detail worth knowing:
+`azuread_access_package_catalog.description` is a **required** argument. Leaving it null
+fails the apply after a clean plan. So the module defaults it from the catalog label when
+creating, and forces it to null when adopting — the two cases genuinely need opposite
+handling, and neither can be left to the caller if a bare catalog label is to work with no
+configuration.
 
 **`delegate_to_systemeier`** is the one standing, non-expiring, non-activated grant this
 system can produce, which is why it is off by default. `Access package manager` rather

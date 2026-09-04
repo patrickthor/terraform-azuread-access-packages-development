@@ -33,13 +33,35 @@ locals {
   # repo 1 gets a working catalog here with no configuration at all.
   # ----------------------------------------------------------------------------
 
+  # Split out because `description` below branches on it, and a `for` expression building
+  # an object cannot reference a sibling attribute of that same object.
+  catalog_adopt = {
+    for label in local.catalog_labels : label =>
+    coalesce(try(var.catalogs[label].adopt_existing, null), false)
+  }
+
   catalog_settings = {
     for label in local.catalog_labels : label => {
-      display_name            = coalesce(try(var.catalogs[label].display_name, null), label)
-      description             = try(var.catalogs[label].description, null)
+      display_name = coalesce(try(var.catalogs[label].display_name, null), label)
+
+      # azuread_access_package_catalog.description is a REQUIRED provider argument, so a
+      # null fails the apply with "The argument description is required" — after a clean
+      # plan, and contradicting this module's promise that a catalog label needs no
+      # configuration at all.
+      #
+      # But the leaf rejects a non-null description when adopting, because the catalog
+      # belongs to another team and rewriting its description would silently alter their
+      # delegation boundary. So: a default when creating, null when adopting.
+      description = (
+        local.catalog_adopt[label] ? null : coalesce(
+          try(var.catalogs[label].description, null),
+          "Access packages for Terraform-vended cloud access. Catalog \"${label}\".",
+        )
+      )
+
       externally_visible      = coalesce(try(var.catalogs[label].externally_visible, null), false)
       published               = coalesce(try(var.catalogs[label].published, null), true)
-      adopt_existing          = coalesce(try(var.catalogs[label].adopt_existing, null), false)
+      adopt_existing          = local.catalog_adopt[label]
       delegate_to_systemeier  = coalesce(try(var.catalogs[label].delegate_to_systemeier, null), false)
       systemeier_catalog_role = coalesce(try(var.catalogs[label].systemeier_catalog_role, null), "Access package manager")
     }
@@ -130,10 +152,28 @@ locals {
   # some role uses dual approval.
   # ----------------------------------------------------------------------------
 
-  approver_group_scopes = var.defaults.grant_approver_group ? [
-    for s in local.scope_keys : s
+  # Scope => approver group name, for the scopes that have one. Pre-filtered so that no
+  # later expression has to test approver_group_name for null as part of a compound
+  # condition, for the reasons spelled out in the null-handling note further down.
+  #
+  # Independent of grant_approver_group: this says which scopes HAVE an approver group,
+  # not which ones get it attached to their package. The peer-approval precondition needs
+  # the former precisely when the latter is empty.
+  scopes_with_approver_group = {
+    for s in local.scope_keys : s => local.v.scopes[s].approver_group_name
     if local.v.scopes[s].approver_group_name != null
-  ] : []
+  }
+
+  # Scopes whose package also grants the approver group.
+  approver_group_scopes = var.defaults.grant_approver_group ? sort(keys(local.scopes_with_approver_group)) : []
+
+  # Scopes where a lone systemeier cannot approve their own request and nothing in this
+  # configuration adds a peer. Iterates the pre-filtered map, so the null case is gone
+  # before the length comparison rather than being guarded alongside it.
+  deadlocked_approver_scopes = [
+    for s, group_name in local.scopes_with_approver_group : s
+    if length(local.v.scopes[s].systemeier) < 2 && !contains(local.approver_group_scopes, s)
+  ]
 
   # Role key "approvers" is reserved in repo 1 so it cannot collide with an approver
   # group name, which makes "{scope}--approvers" guaranteed free as a label here.
@@ -204,7 +244,21 @@ locals {
   # just the same. Using only the managed roles would let a too-long duration pass the
   # plan and then start silently dropping access after the manual step.
   #
-  # Nulls are filtered in the `for` clause, not guarded with `||`.
+  # NULL HANDLING. Every null is filtered out in a `for` clause, and each map below is
+  # keyed only on the scopes that survived. Nothing here guards a null with
+  # `x != null && <compare x>` or with a `x == null ? ... : ...` ternary.
+  #
+  # That is not a style preference. Terraform does not dependably short-circuit `&&` and
+  # `||`, so the second operand is still evaluated and a comparison against null fails
+  # the whole expression with "argument must not be null". Whether it short-circuits
+  # varies by Terraform version and by whether the operands are known at plan time, which
+  # makes the bug appear only in some consumers' plans. A ternary is not a dependable fix
+  # either, for the same reason.
+  #
+  # So `ceiling_by_scope` deliberately does NOT contain an entry for every scope. A scope
+  # with no ceiling is absent rather than null, which makes it impossible to accidentally
+  # compare against. Use lookup(local.ceiling_by_scope, s, null) when a value is needed
+  # for every scope, as the verification_summary output does.
   # ----------------------------------------------------------------------------
 
   ceiling_candidates_by_scope = {
@@ -214,29 +268,30 @@ locals {
     }
   }
 
+  # Scopes with at least one ceiling-bearing role. min() is never called with zero
+  # arguments, because the `if` removes those scopes entirely.
   ceiling_by_scope = {
-    for s in local.scope_keys : s => (
-      length(local.ceiling_candidates_by_scope[s]) > 0
-      ? min(values(local.ceiling_candidates_by_scope[s])...)
-      : null
-    )
+    for s in local.scope_keys : s => min(values(local.ceiling_candidates_by_scope[s])...)
+    if length(local.ceiling_candidates_by_scope[s]) > 0
   }
 
-  # The role that set the binding ceiling, so the error can name it. The ceiling comes
+  # The role that set the binding ceiling, so the error can name it — the ceiling comes
   # from one role's PIM policy and the operator needs to know which one.
+  #
+  # Iterating ceiling_by_scope means `ceiling` is non-null by construction, and the inner
+  # list is guaranteed non-empty because the ceiling was derived from those very
+  # candidates with min().
   binding_ceiling_role_by_scope = {
-    for s in local.scope_keys : s => (
-      local.ceiling_by_scope[s] == null ? null : [
-        for k, days in local.ceiling_candidates_by_scope[s] : k
-        if days == local.ceiling_by_scope[s]
-      ][0]
-    )
+    for s, ceiling in local.ceiling_by_scope : s => [
+      for k, days in local.ceiling_candidates_by_scope[s] : k
+      if days == ceiling
+    ][0]
   }
 
+  # Same iteration source, so the comparison can never see a null.
   scopes_over_ceiling = [
-    for s in local.scope_keys : s
-    if local.ceiling_by_scope[s] != null
-    && local.effective[s].assignment_duration_days > local.ceiling_by_scope[s]
+    for s, ceiling in local.ceiling_by_scope : s
+    if local.effective[s].assignment_duration_days > ceiling
   ]
 
   # ----------------------------------------------------------------------------

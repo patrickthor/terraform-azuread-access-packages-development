@@ -198,8 +198,7 @@ output "manual_steps_required" {
       if length([for k in local.v.scopes[s].role_keys : k if local.v.roles[k].jit_mechanism == "pim_for_groups"]) > 0
     ],
     [
-      for s in local.scope_keys : "Add a second member to the approver group '${local.v.scopes[s].approver_group_name}' for scope '${s}'. It has ${length(local.v.scopes[s].systemeier)} systemeier, and PIM blocks self-approval, so dual-approval roles there cannot be activated by that person alone."
-      if local.v.scopes[s].approver_group_name != null && length(local.v.scopes[s].systemeier) < 2 && !var.defaults.grant_approver_group
+      for s in local.deadlocked_approver_scopes : "Add a second member to the approver group '${local.scopes_with_approver_group[s]}' for scope '${s}'. It has ${length(local.v.scopes[s].systemeier)} systemeier, and PIM blocks self-approval, so dual-approval roles there cannot be activated by that person alone."
     ],
   )
 }
@@ -215,16 +214,14 @@ output "peer_approval_status" {
   EOT
   value = {
     for s in local.scope_keys : s => {
-      has_approver_group  = local.v.scopes[s].approver_group_name != null
-      approver_group_name = local.v.scopes[s].approver_group_name
+      has_approver_group = contains(keys(local.scopes_with_approver_group), s)
+      # lookup rather than a direct index: scopes_with_approver_group omits scopes without
+      # one instead of storing a null for them.
+      approver_group_name = lookup(local.scopes_with_approver_group, s, null)
       granted_by_package  = contains(local.approver_group_scopes, s)
       systemeier_count    = length(local.v.scopes[s].systemeier)
       viable              = contains(local.approver_group_scopes, s)
-      deadlock_risk = (
-        local.v.scopes[s].approver_group_name != null
-        && !contains(local.approver_group_scopes, s)
-        && length(local.v.scopes[s].systemeier) < 2
-      )
+      deadlock_risk       = contains(local.deadlocked_approver_scopes, s)
     }
   }
 }
@@ -244,9 +241,11 @@ output "verification_summary" {
       approver_group_attached = contains(local.approver_group_scopes, s)
       resource_roles_total    = length(local.resource_roles_by_scope[s])
       duration_days           = local.effective[s].assignment_duration_days
-      expiry_ceiling_days     = local.ceiling_by_scope[s]
-      gate_1_approver_count   = length(local.v.scopes[s].systemeier)
-      gate_2_unmanaged_roles  = [for k in local.v.scopes[s].role_keys : local.v.roles[k].role if local.v.roles[k].jit_mechanism == "entra_role"]
+      # lookup with a null default, because ceiling_by_scope deliberately omits scopes
+      # that have no ceiling rather than storing a null for them. See locals.tf.
+      expiry_ceiling_days    = lookup(local.ceiling_by_scope, s, null)
+      gate_1_approver_count  = length(local.v.scopes[s].systemeier)
+      gate_2_unmanaged_roles = [for k in local.v.scopes[s].role_keys : local.v.roles[k].role if local.v.roles[k].jit_mechanism == "entra_role"]
     }
   }
 }

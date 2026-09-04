@@ -125,6 +125,26 @@ jobs:
           fi
           echo "OK: no try() around contract fields."
 
+      # Terraform does not dependably short-circuit && and ||, so `x != null && <compare x>`
+      # still evaluates the comparison and fails the whole expression with "argument must
+      # not be null". Whether it short-circuits varies by Terraform version and by whether
+      # the operands are known at plan time, so this bug reaches consumers' plans without
+      # ever appearing locally. Filter nulls in a `for` clause instead.
+      #
+      # Comment lines are excluded, since the rule itself is documented in prose.
+      - name: assert no compound null guards
+        run: |
+          if grep -rnE '!= *null *&&|&& *[a-z_.]+ *!= *null|== *null *\|\|' modules/ --include='*.tf' \
+             | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
+            echo "::error::compound null guard found under modules/."
+            echo "Terraform does not dependably short-circuit && or ||, so the guarded"
+            echo "expression is still evaluated and fails with 'argument must not be null'."
+            echo "Filter the nulls out in a for clause and key the result only on the"
+            echo "entries that survived. See the null-handling note in locals.tf."
+            exit 1
+          fi
+          echo "OK: no compound null guards."
+
       # Repo 2 must never write a group name or a scope key. Everything comes from the
       # contract. Examples hold fixtures, so they are exempt.
       - name: assert no hardcoded group names or scope keys

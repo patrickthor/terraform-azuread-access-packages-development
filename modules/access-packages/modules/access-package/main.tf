@@ -77,6 +77,11 @@ resource "azuread_access_package_assignment_policy" "this" {
   }
 
   dynamic "question" {
+    # This null-test ternary is safe, unlike the `x != null && <compare x>` pattern the
+    # parent module's locals.tf warns about. Terraform may evaluate both branches, but
+    # neither errors: `[]` and `[null]` are both valid lists. The danger is only when the
+    # unevaluated branch would pass a null to something that rejects it, such as a
+    # comparison operator.
     for_each = var.question_text == null ? [] : [var.question_text]
 
     content {

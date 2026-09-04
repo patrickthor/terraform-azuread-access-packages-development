@@ -325,12 +325,11 @@ resource "terraform_data" "validate_peer_approval_viability" {
     # is what resolves it. This only fires when that is switched off, leaving the deadlock in
     # place with nothing to fix it.
     precondition {
-      condition = var.defaults.grant_approver_group == true || length([
-        for s in local.scope_keys : s
-        if local.v.scopes[s].approver_group_name != null && length(local.v.scopes[s].systemeier) < 2
-      ]) == 0
+      # deadlocked_approver_scopes is already empty when grant_approver_group is true,
+      # so no separate guard on the flag is needed.
+      condition     = length(local.deadlocked_approver_scopes) == 0
       error_message = <<-EOT
-        defaults.grant_approver_group is false, and these scopes have an approver group but fewer than two systemeier: ${join(", ", [for s in local.scope_keys : s if local.v.scopes[s].approver_group_name != null && length(local.v.scopes[s].systemeier) < 2])}
+        defaults.grant_approver_group is false, and these scopes have an approver group but fewer than two systemeier: ${join(", ", [for s in local.deadlocked_approver_scopes : "${s} (${local.scopes_with_approver_group[s]}, ${length(local.v.scopes[s].systemeier)} systemeier)"])}
 
         Repo 1 seeds each approver group with its scope's systemeier, so the group is never
         empty. But PIM blocks self-approval, so a group with exactly one member cannot approve
