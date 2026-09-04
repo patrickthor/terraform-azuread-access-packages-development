@@ -1,194 +1,135 @@
+# ==============================================================================
+# Root inputs
+#
+# Note what is absent: there is no scope list and no role list. Those come from
+# repo 1's state. Adding a scope or a role in repo 1 needs no change here at all.
+#
+# The field reference for `defaults` and `scope_overrides` lives in
+# modules/access-packages/README.md. It is deliberately not duplicated into tfvars
+# comments — copied reference tables end up in user files and never get updated.
+# ==============================================================================
+
 variable "tenant_id" {
-  description = "Entra tenant ID for POC-tenanten."
+  description = "Entra tenant ID."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-fA-F-]{36}$", var.tenant_id))
+    error_message = "tenant_id must be a GUID."
+  }
+}
+
+# ------------------------------------------------------------------------------
+# Where repo 1's state lives
+# ------------------------------------------------------------------------------
+
+variable "state_resource_group_name" {
+  description = "Resource group holding the storage account with repo 1's state."
   type        = string
 }
 
-# ------------------------------------------------------------------------------
-# Katalog
-# ------------------------------------------------------------------------------
-
-variable "catalog_display_name" {
-  description = "Visningsnavn på katalogen som rommer pakkene."
+variable "state_storage_account_name" {
+  description = "Storage account holding repo 1's state. The deploy identity needs Storage Blob Data Reader on it."
   type        = string
-  default     = "Azure Subscriptions"
 }
 
-variable "catalog_description" {
-  description = "Beskrivelse av katalogen."
+variable "state_container_name" {
+  description = "Blob container holding the state files."
   type        = string
-  default     = "Access packages for tilgang til Azure-subscriptions. Forvaltet av Terraform."
+  default     = "tfstate"
 }
 
-variable "catalog_externally_visible" {
-  description = "Om katalogen skal være synlig for eksterne brukere."
-  type        = bool
-  default     = false
-}
-
-# ------------------------------------------------------------------------------
-# Kontrakten mot vending-repoet
-# ------------------------------------------------------------------------------
-
-variable "cloud_prefix" {
+variable "vending_state_key" {
   description = <<-EOT
-    Prefiks på gruppenavn. MÅ være identisk med cloud_prefix i
-    terraform-azuread-access-vending, ellers finner ikke oppslaget gruppene.
+    State key for repo 1 (access-vending). This is repo 1's key, not repo 2's — repo
+    2 reads it. Repo 2 writes its own state to a separate key, configured in
+    backend.hcl.
   EOT
   type        = string
-  default     = "azure"
-
-  validation {
-    condition     = can(regex("^[a-z0-9]+$", var.cloud_prefix))
-    error_message = "cloud_prefix må være små bokstaver og tall, uten bindestrek."
-  }
+  default     = "access-vending.tfstate"
 }
 
-variable "group_lookup_delay" {
+variable "state_use_azuread_auth" {
   description = <<-EOT
-    Ventetid før gruppene slås opp, for å la vending-repoets grupper propagere i
-    Graph. Sett høyere hvis dette repoet kjøres rett etter vending i CI.
+    Authenticate to the state storage account with Entra identity rather than a
+    storage account key. Leave true: an account key would be a second, longer-lived
+    credential to manage, and RBAC on the container is auditable.
   EOT
-  type        = string
-  default     = "30s"
-}
-
-# ------------------------------------------------------------------------------
-# Subscriptions — samme struktur som i vending-repoet
-# ------------------------------------------------------------------------------
-
-variable "subscriptions" {
-  description = <<-EOT
-    Subscriptions og roller. Skal ha IDENTISK struktur som i
-    terraform-azuread-access-vending. Feltene subscription_id og azure_role
-    brukes bare til beskrivelser her — dette repoet oppretter ingen
-    Azure-ressurser.
-  EOT
-
-  type = map(object({
-    subscription_id = string
-    systemeier      = string
-
-    roles = map(object({
-      azure_role  = string
-      pim_enabled = optional(bool, false)
-
-      approval_type       = optional(string, "owner")
-      approver_group_name = optional(string)
-
-      # Felter vending-repoet bruker, men som ignoreres her. Tatt med slik at
-      # samme tfvars-fil kan kopieres uendret mellom repoene.
-      max_activation_hours          = optional(number)
-      require_mfa                   = optional(bool)
-      require_justification         = optional(bool)
-      eligible_user_principal_names = optional(list(string))
-      assignable_to_role            = optional(bool)
-
-      # Overstyringer som bare gjelder access package-en.
-      assignment_duration_days = optional(number)
-      access_type              = optional(string)
-      requestor_scope_type     = optional(string)
-      hidden                   = optional(bool, false)
-    }))
-  }))
-
-  default = {}
-
-  validation {
-    condition = alltrue([
-      for sub_key in keys(var.subscriptions) : !can(regex("--", sub_key))
-    ])
-    error_message = "Subscription-keys kan ikke inneholde '--' (reservert som composite-separator)."
-  }
-
-  validation {
-    condition = alltrue(flatten([
-      for sub in values(var.subscriptions) : [
-        for role_key in keys(sub.roles) : !can(regex("--", role_key))
-      ]
-    ]))
-    error_message = "Rolle-keys kan ikke inneholde '--' (reservert som composite-separator)."
-  }
-
-  validation {
-    condition = alltrue(flatten([
-      for sub in values(var.subscriptions) : [
-        for role in values(sub.roles) :
-        contains(["self", "team", "owner", "dual"], role.approval_type)
-      ]
-    ]))
-    error_message = "approval_type må være en av: self, team, owner, dual."
-  }
-
-  validation {
-    condition = alltrue(flatten([
-      for sub in values(var.subscriptions) : [
-        for role in values(sub.roles) :
-        contains(["team", "dual"], role.approval_type) ? role.approver_group_name != null : true
-      ]
-    ]))
-    error_message = "approver_group_name må settes når approval_type er 'team' eller 'dual'."
-  }
-}
-
-# ------------------------------------------------------------------------------
-# Defaults for tildelingspolicy
-# ------------------------------------------------------------------------------
-
-variable "default_assignment_duration_days" {
-  description = <<-EOT
-    Hvor lenge en tildeling varer før den utløper. Kort expiry er POC-ens
-    substitutt for access reviews — 7-14 dager per oppgaven. Kan overstyres per
-    rolle med assignment_duration_days.
-  EOT
-  type        = number
-  default     = 14
-
-  validation {
-    condition     = var.default_assignment_duration_days >= 1 && var.default_assignment_duration_days <= 3650
-    error_message = "default_assignment_duration_days må være mellom 1 og 3650."
-  }
-}
-
-variable "default_access_type" {
-  description = <<-EOT
-    Hvilken rolle brukeren får på gruppen når tildelingen innvilges.
-
-    "Member" gir aktivt medlemskap og fungerer på ren P2.
-    "EligibleMember" gir eligible-medlemskap som brukeren så PIM-aktiverer, men
-    krever Entra ID Governance-lisens og er derfor utenfor POC-rammen.
-
-    Se beslutning B2 i PROSJEKT-SAMMENDRAG.md.
-  EOT
-  type        = string
-  default     = "Member"
-}
-
-variable "default_requestor_scope_type" {
-  description = "Hvem som kan be om tilgang. Se azuread_access_package_assignment_policy."
-  type        = string
-  default     = "AllExistingDirectoryMemberUsers"
-}
-
-variable "approval_timeout_in_days" {
-  description = "Hvor lenge en forespørsel venter på godkjenning før den forfaller."
-  type        = number
-  default     = 14
-}
-
-variable "require_requestor_justification" {
-  description = "Om den som ber om tilgang må oppgi begrunnelse. Oppgaven krever dette."
   type        = bool
   default     = true
 }
 
-variable "package_display_name_template" {
-  description = "Mal for pakkenavn. Plassholdere: {sub}, {role}, {azure_role}."
+# ------------------------------------------------------------------------------
+# Catalog
+# ------------------------------------------------------------------------------
+
+variable "catalog_display_name" {
+  description = "Display name of the catalog holding every access package."
   type        = string
-  default     = "Azure {sub} - {role}"
+  default     = "Cloud Access"
 }
 
-variable "package_description_template" {
-  description = "Mal for pakkebeskrivelse. Plassholdere: {sub}, {role}, {azure_role}, {subscription_id}."
+variable "catalog_description" {
+  description = "Description of the catalog."
   type        = string
-  default     = "Gir {azure_role}-tilgang til Azure-subscription {sub} via gruppen. Tildelingen utløper automatisk."
+  default     = "Access packages for Terraform-vended cloud access. Managed by repo 2 (access-packages)."
+}
+
+# ------------------------------------------------------------------------------
+# Request-side settings — see modules/access-packages/README.md
+# ------------------------------------------------------------------------------
+
+variable "defaults" {
+  description = "Request-side settings applied to every package unless overridden per scope."
+  type = object({
+    assignment_duration_days = optional(number, 14)
+    requestor_scope_type     = optional(string, "AllExistingDirectoryMemberUsers")
+    require_justification    = optional(bool, true)
+    approval_timeout_days    = optional(number, 7)
+    grant_approver_group     = optional(bool, true)
+  })
+  default = {}
+}
+
+variable "scope_overrides" {
+  description = "Per-scope deviations from `defaults`, keyed on scope key."
+  type = map(object({
+    display_name             = optional(string)
+    description              = optional(string)
+    assignment_duration_days = optional(number)
+    requestor_scope_type     = optional(string)
+    require_justification    = optional(bool)
+    approval_timeout_days    = optional(number)
+    question_text            = optional(string)
+    hidden                   = optional(bool)
+    requests_accepted        = optional(bool)
+  }))
+  default = {}
+}
+
+# ------------------------------------------------------------------------------
+# Blocker 2.1
+# ------------------------------------------------------------------------------
+
+variable "manage_pim_for_groups_roles" {
+  description = <<-EOT
+    Attach roles whose required access type is "EligibleMember" anyway, downgraded to
+    "Member". Default false. Setting this true converts just-in-time eligibility into
+    standing active membership and also requires
+    acknowledge_m3_active_membership = true.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "acknowledge_m3_active_membership" {
+  description = "Explicit acknowledgement of the security regression that manage_pim_for_groups_roles causes."
+  type        = bool
+  default     = false
+}
+
+variable "m3_max_duration_days" {
+  description = "Ceiling on assignment duration for packages containing pim_for_groups roles. Trap 6.1."
+  type        = number
+  default     = 30
 }

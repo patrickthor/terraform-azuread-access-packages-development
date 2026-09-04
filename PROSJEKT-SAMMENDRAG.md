@@ -1,359 +1,203 @@
-# Prosjektsammendrag — terraform-azuread-access-packages
+# Project summary — terraform-azuread-access-packages
 
-**Start her** hvis du tar opp arbeidet etter en pause, eller åpner en ny
-chat-sesjon på dette repoet. Fila er skrevet for å gi full kontekst uten at du
-må lese koden først.
+**Start here** if you are picking the work up after a break or opening a new session on
+this repo. Written to give full context without reading the code first.
 
-Sist oppdatert: 17. august 2026
-Status: **førsteutkast, ikke kjørt mot Azure ennå**
+Last updated: 27 August 2026
+Status: **restructured against the revised steering document. Not yet applied against
+Azure.**
 
 ---
 
-## 1. Hva dette repoet er
+## 1. What this repo is
 
-Oppgave 2 av 2 i POC-en for access packages på Azure (full oppgavetekst i
-`OPPGAVE.md`). Repoet oppretter:
+Assignment 2 of 2 in the Azure access package POC (original text in `OPPGAVE.md`, the
+working contract in `ASSIGNMENT-2-STEERING.md`).
 
-- Én Entitlement Management-katalog (`Azure Subscriptions`)
-- Én access package per (subscription, rolle)
-- Tildelingspolicy per pakke med systemeier som godkjenner, begrunnelse påkrevd
-  og kort expiry (7-14 dager) som substitutt for access reviews
+It creates one Entitlement Management catalog, one access package per **scope**, and one
+assignment policy per package. The groups those packages point at are **not** created
+here — they come from `terraform-azuread-access-vending` (repo 1), whose Terraform state
+this repo reads.
 
-Gruppene pakkene peker på opprettes **ikke** her. De slås opp på navn fra
-**`terraform-azuread-access-vending`**.
+Everything else about the design follows from one property: **the package set is derived,
+not configured.** There is no scope list and no role list anywhere in this repo. Add a
+role in repo 1, apply repo 1, apply repo 2, and it appears in the right package with no
+edit here.
 
-### Apply-rekkefølge
+### Apply order
 
 ```
-1. terraform-azuread-access-vending      ← må kjøres først, oppretter gruppene
-2. terraform-azuread-access-packages     ← dette repoet, slår opp gruppene
+1. terraform-azuread-access-vending    ← must run first
+2. terraform-azuread-access-packages   ← this repo, reads repo 1's state
 ```
 
-Kjører du dette først, feiler `apply` med "no group found".
+This is enforced rather than conventional: the plan cannot resolve without repo 1's state.
+That was a deliberate goal of the remote-state decision, because the failure mode of
+getting it wrong is silent — for `pim_for_groups` roles, writing the PIM policy is what
+onboards the group to PIM, and until then the resource-role picker offers only `Member`.
 
 ---
 
-## 2. POC-rammen i korte trekk
+## 2. The POC frame
 
-- POC-tenant med **Entra ID P2**, ingen Governance-tillegg.
-- Access reviews og lifecycle workflows er utenfor scope. Erstattes av kort
-  expiry på tildelingen + manuell re-request.
-- Azure er native Entra. Ingen SCIM, ingen Logic App.
-- Subscription-opprettelse er utenfor scope. POC-en bruker 1-2 eksisterende
-  test-subscriptions.
-- Designen skal kunne videreføres til AWS/GCP/GitHub. Katalogen og
-  pakke-policy-mønsteret er felles på tvers; bare gruppens bakenforliggende
-  autorisasjonskobling er sky-spesifikk.
-- **Ingen hardkoding av rollenavn.** `reader`/`contributor`/`owner` er bare
-  eksempler; rolle er en fri streng.
-
----
-
-## 3. Beslutninger
-
-Alle beslutninger er dokumentert med begrunnelse og hvor de endres. **Disse er
-valgt for POC-fart — endre fritt.** Beslutningsnumrene er de samme i begge
-repoer.
-
-### B1 — To separate repoer
-
-**Valgt:** to repoer, som oppgaven spesifiserer.
-
-**Begrunnelse:** oppgaven sier det fire steder, og akseptansekriteriet "kan
-løftes inn i LZ-repoet uten omskriving" forutsetter rene modulgrenser.
-
-**Kostnad vi aksepterer:** ingen Terraform-graf på tvers. Gruppene bindes via
-navneoppslag, ikke via `depends_on`. Konsekvenser: Graph-propagering må håndteres
-med ventetid, apply-rekkefølge er konvensjon og ikke håndhevet, og
-`terraform taint` på en gruppe i vending gir ny object-ID som dette repoet ikke
-oppdager før neste `apply`.
-
-**Endres i:** repo-struktur. `var.group_lookup_delay` kan settes til `"0s"` hvis
-repoene slås sammen.
-
-### B2 — Access packages gir aktivt medlemskap, ikke eligible
-
-**Valgt:** `access_type = "Member"`. Eligibility tildeles statisk i
-vending-repoets tfvars.
-
-**Begrunnelse — dette er den viktigste beslutningen i POC-en.** Oppgaven er
-tvetydig om hvem som tildeler eligibility, og de to lesningene har ulike
-lisenskrav:
-
-| Lesning | Hvordan | Lisens |
-|---|---|---|
-| **A (valgt)** | Pakken gir aktivt medlemskap. Eligibility statisk i vending-tfvars. | **P2 holder** |
-| B | Pakken gir eligible medlemskap. Én forespørselsflate for alt. | Krever **Entra ID Governance / Suite** |
-
-Microsoft dokumenterer at [tildeling av eligible gruppemedlemskap via access
-packages](https://learn.microsoft.com/en-us/entra/id-governance/entitlement-management-access-package-eligible)
-krever Entra ID Governance- eller Entra Suite-lisens. POC-rammen utelukker
-Governance-tillegg.
-
-Grunnleggende access packages fungerer derimot fint på P2 — Microsoft lister
-[P2, Entra ID Governance eller EMS E5](https://learn.microsoft.com/en-us/entra/id-governance/entitlement-management-access-package-first)
-som gyldige lisenser for entitlement management. Oppgavenotatets bekymring om at
-Entitlement Management skulle være flyttet helt under Governance stemmer altså
-ikke for kjernefunksjonaliteten.
-
-**Konsekvens:** for PIM-roller gir pakken aktivt medlemskap, som umiddelbart
-aktiverer den permanente RBAC-bindingen. Det omgår PIM-aktiveringssteget.
-I POC-en fungerer PIM-testene ved at eligibility er forhåndstildelt i
-vending-tfvars, uavhengig av pakken. Det er en reell forskjell fra måldesignet og
-bør meldes videre.
-
-**Endres i:** `var.default_access_type` eller `roles[*].access_type`. Sett til
-`"EligibleMember"` for lesning B. Verifiser at provideren tar imot verdien —
-det er ikke bekreftet.
-
-### B3 — `dual` gir to godkjenningssteg her, ett i PIM
-
-**Valgt:** `approval_type = "dual"` gir **to reelle godkjenningssteg** på
-access package-forespørselen: først team-gruppa, deretter systemeier. I
-vending-repoets PIM-policy degraderer den til ett steg med begge godkjennerne.
-
-**Begrunnelse:** de to lagene har ulike muligheter.
-
-| Lag | Antall steg | Kilde |
-|---|---|---|
-| Access package-policy (dette repoet) | opptil 2 | Microsoft dokumenterer [flerstegs godkjenning](https://learn.microsoft.com/en-us/entra/id-governance/entitlement-management-access-package-approval-policy) |
-| PIM for Groups-aktivering (vending) | 1 | `azuread_group_role_management_policy.activation_rules.approval_stage` finnes i entall |
-
-Alternativene var å droppe `dual` helt (skjuler et krav) eller å gå til
-`msgraph`/`azapi` mot beta-endepunkter for én verdis skyld (bryter
-provider-linjen i oppgaven). Å implementere `dual` der plattformen støtter det,
-og degradere eksplisitt der den ikke gjør det, gir mest verdi per innsats.
-
-**Konsekvens:** oppgavens testpunkt "PIM-aktiver høyere rolle (owner) → dual
-approval" må presiseres til å gjelde access-package-forespørselen.
-
-**Mapping i dette repoet:**
-
-| `approval_type` | Steg | Godkjennere |
-|---|---|---|
-| `self` | 0 | ingen |
-| `team` | 1 | `approver_group_name` som `groupMembers` |
-| `owner` | 1 | `systemeier` som `singleUser` |
-| `dual` | 2 | steg 1 team, steg 2 systemeier |
-
-**Endres i:** `main.tf`, `local.approval_stages_by_instance`.
-
-### B4 — `azurerm` for RBAC, med deterministisk `name`
-
-Gjelder vending-repoet. Dette repoet oppretter ingen Azure-ressurser og har
-ikke `azurerm` i `required_providers`.
-
-### B5 — Samme tfvars-skjema, egen fil per repo
-
-**Valgt:** hvert repo har sin egen `terraform.tfvars` med identisk
-`subscriptions`-struktur. Ikke delt fil.
-
-**Begrunnelse:** oppgaven sier "samme struktur i begge repoer" — det er skjemaet
-som er kontrakten, ikke fila.
-
-Skjemaet her tar imot alle feltene vending-repoet bruker, også de dette repoet
-ignorerer (`max_activation_hours`, `require_mfa`,
-`eligible_user_principal_names`, `assignable_to_role`). Det gjør at samme blokk
-kan kopieres uendret mellom repoene uten valideringsfeil.
-
-**Risiko:** divergens over tid. En rolle lagt til her men ikke der gir en pakke
-som leter etter en gruppe som ikke finnes.
-
-**Endres i:** `terraform.tfvars` i begge repoer. Ved behov: CI-jobb som differ
-`subscriptions`-nøklene på tvers.
-
-### B6 — Oppslag på `display_name`
-
-**Valgt:** `data "azuread_group" { display_name = ... }`, som oppgaven
-spesifiserer.
-
-**Begrunnelse:** `display_name` er ikke unikt i Entra, men vending-repoet setter
-`mail_nickname` til samme streng (som *er* unik i tenant) og har
-`prevent_duplicate_names = true`. Kombinasjonen gjør oppslaget entydig i praksis,
-uten at vi endrer navnekontrakten oppgaven kaller ufravikelig.
-
-**Endres i:** `main.tf`, `data "azuread_group" "role_groups"`.
-
-### B7 — Team-godkjennere angis eksplisitt per rolle
-
-**Valgt:** feltet `approver_group_name` per rolle. Kreves når `approval_type` er
-`team` eller `dual`. `owner` bruker `systemeier` fra subscription-nivå.
-
-**Begrunnelse:** oppgaven nevner `"team"` som approval-type uten å definere hvem
-team er. Gruppen må finnes fra før — POC-en oppretter den ikke.
-
-**Endres i:** `variables.tf` (validering) og `main.tf` (oppslag).
-
-### B8 — `msgraph`-provideren brukes ikke
-
-**Valgt:** kun `azuread` og `time`.
-
-**Begrunnelse:** oppgaven sier `azuread` dekker access packages med typede
-GA-ressurser.
-
-Merk at det eksisterende `terraform-azuread-identity-governance`-repoet bruker
-`msgraph` for access reviews. Access reviews er utenfor POC-scope, så behovet
-faller bort.
-
-### B11 — Access reviews settes ikke
-
-**Valgt:** `assignment_review_settings` utelates helt fra
-tildelingspolicyen.
-
-**Begrunnelse:** POC-tenanten har ikke Governance-tillegg, og oppgaven setter
-access reviews utenfor scope. Kort `duration_in_days` (default 14) er
-substituttet — tildelingen utløper og brukeren må be på nytt.
-
-**Endres i:** `modules/group-access-package/main.tf`.
+- POC tenant on **Entra ID P2**, no Governance add-on. Blocker 2.2 is about whether that
+  is even enough; run `scripts/verify-entitlement-management.sh`.
+- Access reviews and lifecycle workflows are out of scope. Short assignment expiry plus
+  manual re-request is the deliberate substitute.
+- Azure is native Entra. No SCIM and no Logic App in this repo.
+- Subscription creation is out of scope.
+- The design must carry over to AWS/GCP/GitHub. The catalog and the package/policy pattern
+  are cloud-agnostic; only the group's underlying authorization binding is cloud-specific,
+  and that lives in repo 1.
+- **No hardcoded role names.** Both leaf modules know only about Entra groups, never about
+  what those groups grant.
 
 ---
 
-## 4. Risikoer og ting å verifisere tidlig
+## 3. Where things stand
 
-### R2 — Argumentnavn: verifisert med `terraform validate` (i hovedsak løst)
+Done:
 
-`terraform init && terraform validate` er kjørt og gir **Success**. Følgende er
-dermed bekreftet mot providerens skjema:
+- Two leaf modules: `access-package-catalog`, `access-package`
+- The wrapper `modules/access-packages/` with the full derivation and five plan-time
+  preconditions
+- Root rewritten as a thin passthrough reading repo 1's state
+- `examples/complete` (literal fixture, local state, runs offline) and
+  `examples/github-consumption` (remote state, pinned ref)
+- `scripts/grant-graph-permissions.sh` extended with the missing `User.Read.All`
+- `scripts/verify-entitlement-management.sh` for blocker 2.2
+- CI workflow with the `needs:` ordering note and a no-provider-blocks assertion
+- All documentation in English. `systemeier` stays as a field **name** — it is a code
+  identifier, not prose
+- Derivation verified offline against the 11-group fixture: 4 packages, 8 roles attached,
+  3 excluded, 14 catalog associations, 11 package associations. All five preconditions
+  confirmed to fire on their respective failure paths
 
-- `approval_settings.requestor_justification_required` — riktig plassering og navn
-- `approval_settings.approval_stage.primary_approver.subject_type` — riktig navn
-- `requestor_settings.requests_accepted` — riktig navn
-- `azuread_access_package_resource_catalog_association` og
-  `..._resource_package_association` med de feltene vi bruker
+Not done, and blocking real verification:
 
-**Gjenstår:** `validate` sjekker navn, ikke verdier. Fortsatt uverifisert:
-
-- Om `access_type` godtar `"EligibleMember"` (kun `"Member"` er testet i praksis
-  gjennom POC-designet — se B2)
-- Om `subject_type = "groupMembers"` fungerer som forventet for team-godkjennere
-- Om `requestor_scope_type = "AllExistingDirectoryMemberUsers"` er riktig
-  enum-verdi for vår tenant-konfigurasjon
-
-### R4 — Graph-propagering ved gruppeoppslag
-
-Grupper vending-repoet nettopp opprettet er ikke umiddelbart søkbare i Graph.
-
-**Mitigert med:** `time_sleep.group_propagation` (default 30s) som
-`data "azuread_group"` avhenger av. Den sover kun ved første opprettelse, så
-kostnaden er engangs.
-
-**Hvis `apply` feiler med "no group found":** sjekk først at vending-repoet
-faktisk har kjørt og at gruppenavnene stemmer:
-
-```bash
-terraform output resolved_group_names
-(cd ../terraform-azuread-access-vending && terraform output group_names)
-```
-
-Er navnene identiske og gruppene finnes i portalen, øk `group_lookup_delay`.
-
-### R9 — Navnederiveringen er duplisert
-
-`locals.tf` her og `modules/azure-subscription-access/main.tf` i vending-repoet
-inneholder samme navnelogikk. Endres den ett sted, må den endres i begge.
-Divergens gir kryptiske "no group found"-feil, ikke en tydelig feilmelding.
-
-**Mitigasjon på sikt:** en delt modul, eller en CI-test som verifiserer at kjent
-input gir samme output i begge repoer.
-
-### R10 — Lisensverifisering bør gjøres først av alt
-
-Oppgaven ber eksplisitt om å verifisere at access packages lar seg opprette på
-ren P2. Etter dokumentasjonen skal det gå, men bekreft i POC-tenanten før du
-bygger videre.
-
-**Rask test:** opprett en katalog manuelt i portalen under ID Governance >
-Entitlement management. Får du "Access denied", mangler lisensen.
-
-### R11 — Access reviews-modulen i det gamle repoet gjenbrukes ikke
-
-Det eksisterende `terraform-azuread-identity-governance` har en
-`access-review-definition`-modul basert på `msgraph`. Den er bevisst ikke tatt
-med. Skal access reviews inn senere, hent den derfra.
+- **Nothing has been applied against the tenant.** Every claim about runtime behaviour is
+  a claim about what the provider documents, not about what happened
+- Blocker 2.2 unverified: is Entitlement Management usable on P2 alone?
+- Blocker 2.1's platform half unverified: does the tenant offer "Eligible Member" as a
+  resource role at all, or is the provider gap masking a licensing gap?
+- The `Verified in this tenant` table in `README.md` is empty
+- The end-to-end test plan (§9 of the steering document) has not been run
 
 ---
 
-## 5. Status
+## 4. Decisions
 
-### Gjort
+Numbered D-series here; the same table with the reasoning is in `README.md`. Repo 1's
+B-series decisions are separate and referenced by number where relevant.
 
-- Katalogmodul og pakkemodul, begge sky-agnostiske
-- Rot-modul som slår opp grupper og itererer over (subscription, rolle)
-- Ett- og to-stegs godkjenning implementert etter `approval_type`
-- Variabelskjema som tar imot samme tfvars-blokk som vending-repoet, med
-  validering
-- README per modul med input/output og kall-eksempel
-- Script for Graph-permissions
-- Outputs for å krysse gruppenavn mot vending-repoet
-
-### Verifisert
-
-- `terraform fmt -recursive` — formatering normalisert
-- `terraform init -backend=false` + `terraform validate` → **Success**. Alle
-  ressurstyper og attributtnavn er sjekket mot provider-skjemaet.
-- Provider-versjoner som ble resolvet: `azuread` 3.9.0, `time` 0.14.1
-  (constraintene `~> 3.7` og `~> 0.12` tillater dette).
-- Repoet trekker ikke inn `azurerm` eller `msgraph` — kun `azuread` og `time`.
-
-### Ikke gjort
-
-- **Ingen `plan` eller `apply` mot POC-tenanten.** Krever autentisering og
-  Graph-permissions.
-- Lisens ikke verifisert i POC-tenanten (se R10).
-- Ingen CI-workflow.
-- Ingen backend-konfigurasjon (kjører med lokal state så langt).
-- Idempotency ikke verifisert.
-- MyAccess-flyten ikke testet ende-til-ende.
-
-### Neste steg, i rekkefølge
-
-1. Verifiser lisens i POC-tenanten (se R10). **Gjør dette først** — feiler det,
-   stopper POC-en.
-2. Grant Graph-permissions.
-3. Kjør vending-repoet ferdig og verifiser at gruppene finnes.
-4. `apply` med **én** subscription og **én** rolle først.
-5. Kryss gruppenavn mot vending-repoet med `terraform output`.
-6. `plan` på nytt for å bekrefte idempotency.
-7. Test MyAccess-flyten manuelt: be om tilgang, godkjenn, verifiser tilgang.
-8. Utvid til full tfvars.
-
----
-
-## 6. Åpne spørsmål til avklaring
-
-- [ ] **Lesning A vs B for eligibility** (se B2). Avgjør om POC-en trenger
-      Governance-lisens. Bør meldes til den som skrev oppgaven.
-- [ ] **Testchecklisten** må justeres for at PIM-aktivering ikke støtter
-      to-stegs godkjenning (se B3).
-- [ ] **Hvilken gruppe er team-godkjennere?** `approver_group_name` er lagt til
-      som felt, men POC-en definerer ikke en konkret gruppe (se B7).
-- [ ] **Én katalog eller én per subscription?** Utkastet bruker én felles
-      katalog, som oppgaven antyder. Én per subscription ville gi bedre delegering
-      av katalogeierskap til systemeier.
-- [ ] **Backend:** skal state ligge i samme storage account som vending-repoet,
-      med ulik key?
-- [ ] **Skal `requestor_scope_type` være `AllExistingDirectoryMemberUsers`?**
-      Det åpner for at alle interne kan be om tilgang til alt. Snevrere scope
-      krever at vi definerer hvem som er kvalifisert per subscription.
-
----
-
-## 7. For en ny chat-sesjon
-
-Nyttig kontekst å gi opp front:
-
-> Dette er access-package-repoet (Oppgave 2) i en to-repo POC for access packages
-> på Azure. Les `PROSJEKT-SAMMENDRAG.md` og `OPPGAVE.md` først. Koden er et
-> uverifisert førsteutkast — ingen `terraform validate` er kjørt. Det andre repoet
-> er `terraform-azuread-access-vending` og ligger som søskenmappe; det må
-> `apply`-es før dette.
-
-Filer som gir mest kontekst raskt:
-
-| Fil | Hva den gir |
+| # | Decision |
 |---|---|
-| `PROSJEKT-SAMMENDRAG.md` | denne fila — beslutninger, risikoer, status |
-| `OPPGAVE.md` | full oppgavetekst for begge halvdeler |
-| `locals.tf` | navnederiveringen, altså kontrakten mot vending-repoet |
-| `main.tf` | gruppeoppslag, godkjennerlogikk, iterasjon |
-| `variables.tf` | tfvars-kontrakten med validering |
+| D1 | Consume repo 1 via `terraform_remote_state`, not `data "azuread_group"` name lookup |
+| D2 | The root reads the state; the module takes a typed `vending` input |
+| D3 | One access package per **scope**, not per group and not per persona yet |
+| D4 | Gate 1 approval is `systemeier_by_scope` only; gate 2 stays repo 1's |
+| D5 | Catalog associations in the wrapper module, not the leaf |
+| D6 | Blocker 2.1 → option 1, with catalog associations still created for excluded groups |
+| D7 | §5.5 option A: the approver group is a resource role, on by default |
+| D8 | Trap 6.1 as a configured ceiling plus a manual confirmation step |
+| D9 | `terraform_data` preconditions rather than `check` blocks |
+| D10 | One catalog for all packages |
+| D11 | Fields repo 2 cannot honour are rejected, not accepted and dropped |
+
+### Reversals from the earlier draft, and why
+
+Worth reading if you remember the previous shape of this repo.
+
+**Name lookup → remote state (D1).** The earlier draft recommended
+`data "azuread_group"` on `display_name`, on the grounds that it is more loosely coupled.
+It is, but to look a group up by name repo 2 has to know every scope key and role key
+independently — its own copy of the taxonomy. Add a role in repo 1, forget it here, and it
+silently has no access package. Loose coupling or no duplication, not both. Remote state
+also made the apply-order rule a hard failure instead of a convention.
+
+**One package per (subscription, role) → one per scope (D3).** A package grants everything
+in it atomically; there is no menu. So its natural unit is a job function, not an
+individual permission. This works here specifically because repo 1's groups are
+PIM-managed: membership is not privilege, activation is. A package can hand someone their
+whole scope and PIM still gates each escalation.
+
+**Reimplementing `approval_type` → gate 1 only (D4).** The earlier root translated repo 1's
+`self`/`owner`/`dual` into approval stages on the access package. That conflated the two
+gates: `approval_type` governs privilege elevation, which repo 1 already built on the PIM
+policies. Repo 2 answers a different question — who may enter the scope — and that is the
+`systemeier`.
+
+**Accepted-and-ignored fields dropped (D11).** The earlier variables accepted `pim_enabled`,
+`max_activation_hours`, `require_mfa`, `eligible_user_principal_names` and
+`assignable_to_role` and did nothing with them. That is the exact pattern §11 forbids.
+Moot now anyway, since repo 2's tfvars carries no role list at all.
+
+---
+
+## 5. Risks
+
+| # | Risk | Status |
+|---|---|---|
+| R1 | Blocker 2.1: `EligibleMember` is unsupported by the provider, so `pim_for_groups` roles are excluded from IaC | Mitigated by option 1 and made visible in `excluded_resource_roles`. **Not eliminated** |
+| R2 | Blocker 2.2: Entitlement Management may need Governance licensing, not just P2 | **Unverified.** Gates everything |
+| R3 | Trap 6.7: the `tenant` package hands out `Groups Administrator` with gate 1 as its only Terraform-enforced control | Mitigated by a 7-day duration; the PIM portal rules must be set by hand |
+| R4 | `jaws` currently grants only its approver group, because every role in it is excluded by R1 | Visible in `granted_groups_by_package`; three portal steps to complete |
+| R5 | Renaming a scope or role key in repo 1 is destructive and invalidates every object ID here | Treat the key set as append-only across both repos |
+| R6 | Trap 6.5: `CallerNotResourceOwner` if repo 2 runs as a different identity from repo 1 | Mitigated by reusing repo 1's service principal |
+| R7 | Trap 6.1: assignment expiry outliving the PIM eligibility expiry causes silent access loss | Precondition enforces a 30-day ceiling on M3 packages. The ceiling is configured, not read from repo 1 |
+| R8 | Repo 1's M4 activation rules are unmanageable in Terraform | Surfaced via the forwarded `entra_activation_governance_gap` output |
+
+---
+
+## 6. Next steps
+
+In order.
+
+1. Run `scripts/verify-entitlement-management.sh`. Record the answer to blocker 2.2 in the
+   `Verified in this tenant` table. If Entitlement Management is unavailable, stop.
+2. Run `scripts/grant-graph-permissions.sh` and grant `Storage Blob Data Reader` on repo
+   1's state account.
+3. `terraform apply`, then `terraform plan` again to confirm idempotency.
+4. Read `terraform output manual_steps_required` and do the portal work it lists.
+5. Answer the blocker 2.1 platform question: does the tenant offer "Eligible Member" as a
+   resource role? The command is in step 4 of the verify script.
+6. Work through the §9 test plan. Tests 6, 7 and 10 are the ones that can falsify the
+   design rather than merely exercise it.
+7. Fill in the `Verified in this tenant` table.
+
+---
+
+## 7. Open questions
+
+| # | Question | Position |
+|---|---|---|
+| 1 | Entitlement Management on P2 alone? | Unverified. Blocks everything |
+| 2 | `EligibleMember` handling | Option 1 chosen. Revisit if the platform turns out not to offer it either |
+| 3 | Approver group membership | Option A, on by default. Option B (junior/senior split) is the next step |
+| 4 | One catalog or one per scope? | One. Per-scope only pays off when delegating catalog ownership |
+| 5 | Same service principal as repo 1? | Yes, per trap 6.5 |
+| 6 | Does `tenant` stay one package? | For now. Splitting `groupsadmin` from `directoryreader` is defensible and would deviate from one-package-per-scope deliberately |
+| 7 | Any package needing genuine two-stage approval? | None today. Gate 1 is the only place it is possible, and the leaf module supports up to 2 stages |
+
+---
+
+## 8. Known documentation inconsistencies
+
+Found while implementing against the revised steering document. Recorded rather than
+silently worked around.
+
+- **§3.6 vs the note beneath it.** The table lists `azure-morkanaught-approvers` as one of
+  14 groups, but the note below still says morkanaught has *no* approver group. §5.5 agrees
+  with the table (three approver groups: tommer, morkanaught, jaws). The code derives from
+  `approver_group_object_ids` at runtime and is unaffected either way.
+- **§5.4 code comment.** Says "All 14 group names" for `group_names`, but the same comment
+  then notes approver groups are not in that output. It holds 11 role groups; 14 is the
+  total including the 3 approver groups. The counts in §5.3 are consistent with 11.
+- **§9 has two contradictory trailing paragraphs.** One says test 4 matters most and test 10
+  reveals blocker 2.1; the other says test 3 and test 9. By the numbered table, test 4 is
+  propagation and test 10 is the M3 eligible-vs-active check, so the first paragraph matches
+  the table.
+- **`OPPGAVE.md` documents the old tfvars shape** — a `subscriptions` block with
+  `subscription_id`, from when packages were one-per-(subscription, role). Superseded by the
+  derived model. Left unedited because it is the original assignment text, not a design
+  document.

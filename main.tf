@@ -1,139 +1,77 @@
 # ==============================================================================
-# Rot-modul — POC access packages
+# Root — thin passthrough to modules/access-packages
 #
-# Slår opp gruppene vending-repoet har opprettet, og lager én access package per
-# (subscription, rolle) med systemeier som godkjenner.
+# The root does exactly two things: read repo 1's state, and hand it to the module.
+# All logic lives in the module so that it can be consumed from a pinned git ref by
+# anyone else, with a different state layout or none at all.
 #
-# FORUTSETNING: terraform-azuread-access-vending må ha kjørt først. Gruppene
-# slås opp på navn og må finnes.
+# PREREQUISITE: repo 1 (access-vending) must have applied first. Under this design
+# that is not a convention you have to remember — the plan physically cannot resolve
+# without repo 1's state, so getting the order wrong fails instead of silently
+# producing active membership where eligibility was intended. See trap 6.2.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# Gruppeoppslag — kontrakten mot vending-repoet
-# ------------------------------------------------------------------------------
-
-# Nyopprettede grupper er ikke umiddelbart søkbare i Graph. Denne sover kun ved
-# første opprettelse, så kostnaden er engangs.
-resource "time_sleep" "group_propagation" {
-  create_duration = var.group_lookup_delay
-}
-
-# Oppslag på display_name, som oppgaven spesifiserer. Vending-repoet setter både
-# display_name og mail_nickname til samme streng, og har
-# prevent_duplicate_names = true, så oppslaget er entydig.
+# The contract from repo 1
 #
-# depends_on gjør at Terraform utsetter lesingen til apply-tid.
-data "azuread_group" "role_groups" {
-  for_each = local.role_instances
-
-  display_name = each.value.group_name
-
-  depends_on = [time_sleep.group_propagation]
-}
-
-# ------------------------------------------------------------------------------
-# Godkjennere
+# Remote state rather than looking groups up by display_name. A name lookup sounds
+# more loosely coupled, but to look a group up by name repo 2 would have to know
+# every scope key and role key independently — its own copy of the taxonomy, which
+# is the duplication worth avoiding. Add a role in repo 1, forget it here, and it
+# would silently have no access package. See section 3.1.
+#
+# Requires Storage Blob Data Reader on repo 1's state storage account.
 # ------------------------------------------------------------------------------
 
-data "azuread_user" "systemeier" {
-  for_each            = local.systemeier_upns
-  user_principal_name = each.value
-}
+data "terraform_remote_state" "vending" {
+  backend = "azurerm"
 
-data "azuread_group" "approvers" {
-  for_each     = local.approver_group_names
-  display_name = each.value
-}
-
-locals {
-  # Godkjenningssteg per rolle-instans.
-  #
-  # Her realiseres "dual" som to reelle steg — noe PIM for Groups ikke støtter.
-  # Se beslutning B3 i PROSJEKT-SAMMENDRAG.md.
-  #
-  #   self  → ingen godkjenning
-  #   team  → 1 steg: team-gruppa
-  #   owner → 1 steg: systemeier
-  #   dual  → 2 steg: team-gruppa, deretter systemeier
-  approval_stages_by_instance = {
-    for key, inst in local.role_instances : key => (
-      inst.approval_type == "self" ? [] :
-      inst.approval_type == "team" ? [
-        {
-          approvers = [{
-            object_id    = data.azuread_group.approvers[inst.approver_group_name].object_id
-            subject_type = "groupMembers"
-          }]
-        }
-      ] :
-      inst.approval_type == "owner" ? [
-        {
-          approvers = [{
-            object_id    = data.azuread_user.systemeier[inst.systemeier].object_id
-            subject_type = "singleUser"
-          }]
-        }
-      ] :
-      # dual
-      [
-        {
-          approvers = [{
-            object_id    = data.azuread_group.approvers[inst.approver_group_name].object_id
-            subject_type = "groupMembers"
-          }]
-        },
-        {
-          approvers = [{
-            object_id    = data.azuread_user.systemeier[inst.systemeier].object_id
-            subject_type = "singleUser"
-          }]
-        },
-      ]
-    )
+  config = {
+    resource_group_name  = var.state_resource_group_name
+    storage_account_name = var.state_storage_account_name
+    container_name       = var.state_container_name
+    key                  = var.vending_state_key
+    use_azuread_auth     = var.state_use_azuread_auth
   }
 }
 
-# ------------------------------------------------------------------------------
-# Katalog
-# ------------------------------------------------------------------------------
-
-module "catalog" {
-  source = "./modules/access-package-catalog"
-
-  display_name       = var.catalog_display_name
-  description        = var.catalog_description
-  externally_visible = var.catalog_externally_visible
+locals {
+  v = data.terraform_remote_state.vending.outputs
 }
 
-# ------------------------------------------------------------------------------
-# Én access package per (subscription, rolle)
-# ------------------------------------------------------------------------------
+module "access_packages" {
+  source = "./modules/access-packages"
 
-module "access_package" {
-  source   = "./modules/group-access-package"
-  for_each = local.role_instances
+  # The taxonomy. Assembled explicitly rather than passed as a whole object so that
+  # a missing or renamed output in repo 1 fails here, by name, instead of surfacing
+  # as a confusing type error deeper in the module.
+  vending = {
+    group_names                = local.v.group_names
+    group_object_ids           = local.v.group_object_ids
+    access_package_access_type = local.v.access_package_access_type
+    jit_mechanism              = local.v.jit_mechanism
 
-  catalog_id      = module.catalog.catalog_id
-  group_object_id = data.azuread_group.role_groups[each.key].object_id
+    systemeier_by_scope            = local.v.systemeier_by_scope
+    approver_group_object_ids      = local.v.approver_group_object_ids
+    approver_group_names           = local.v.approver_group_names
+    approver_group_is_managed_here = local.v.approver_group_is_managed_here
 
-  display_name = each.value.display_name
-  description  = each.value.description
-  hidden       = each.value.hidden
-  access_type  = each.value.access_type
+    # Reference only — forwarded to outputs, never interpreted. try() because these
+    # describe gate 2, which repo 1 owns; if an older repo 1 does not publish them,
+    # repo 2 still builds a correct gate 1 and simply has less to report.
+    approvers_by_role               = try(local.v.approvers_by_role, {})
+    access_model                    = try(local.v.access_model, {})
+    activation_settings             = try(local.v.activation_settings, {})
+    entra_activation_governance_gap = try(local.v.entra_activation_governance_gap, {})
+  }
 
-  policy_display_name = "${each.value.display_name} - standard"
-  policy_description = join(" ", [
-    "Forespørsel om ${each.value.azure_role}-tilgang til ${each.value.subscription_key}.",
-    length(local.approval_stages_by_instance[each.key]) > 0
-    ? "Godkjenning i ${length(local.approval_stages_by_instance[each.key])} steg."
-    : "Ingen godkjenning påkrevd.",
-    "Tildelingen utløper etter ${each.value.assignment_duration_days} dager.",
-  ])
+  catalog_display_name = var.catalog_display_name
+  catalog_description  = var.catalog_description
 
-  duration_in_days     = each.value.assignment_duration_days
-  requestor_scope_type = each.value.requestor_scope_type
+  defaults        = var.defaults
+  scope_overrides = var.scope_overrides
 
-  requestor_justification_required = var.require_requestor_justification
-  approval_timeout_in_days         = var.approval_timeout_in_days
-  approval_stages                  = local.approval_stages_by_instance[each.key]
+  manage_pim_for_groups_roles      = var.manage_pim_for_groups_roles
+  acknowledge_m3_active_membership = var.acknowledge_m3_active_membership
+  m3_max_duration_days             = var.m3_max_duration_days
 }

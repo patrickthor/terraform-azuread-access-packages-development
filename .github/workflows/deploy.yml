@@ -1,0 +1,205 @@
+name: deploy
+
+# Repo 2 (access-packages). Reads repo 1's state and builds the catalog, the access
+# packages and the gate 1 assignment policies.
+#
+# APPLY ORDER. Repo 1 (access-vending) must have applied first. Under this design that
+# is enforced rather than merely documented: the plan reads repo 1's state through
+# data.terraform_remote_state, so it cannot resolve until that state exists.
+#
+# For pim_for_groups roles the ordering matters beyond group existence. Writing the PIM
+# policy is what onboards a group to PIM for Groups, and until that has happened the
+# resource-role picker offers only "Member", never "Eligible Member". If both repos
+# ever run in one pipeline, the vending job must be a `needs:` dependency of this one:
+#
+#   jobs:
+#     vending:
+#       ...
+#     access-packages:
+#       needs: vending        # ← not optional. See trap 6.2.
+#
+# Without it, GitHub Actions runs them in parallel and repo 2 may win the race. Nothing
+# errors: you get active membership instead of just-in-time access, which is the same
+# failure mode as blocker 2.1 arriving by a different route.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC federated credential. No client secret stored anywhere.
+
+env:
+  TF_VERSION: "1.9.8"
+  ARM_USE_AZUREAD: "true" # Entra auth to the state storage account, not an account key
+  ARM_USE_OIDC: "true"
+
+concurrency:
+  # Two applies against the same catalog would race on the resource associations.
+  group: access-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ----------------------------------------------------------------------------------
+  # Static checks. No cloud credentials, so this runs on forks and untrusted PRs too.
+  # ----------------------------------------------------------------------------------
+  validate:
+    name: fmt and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: validate root
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: validate module
+        run: |
+          cd modules/access-packages
+          terraform init -backend=false
+          terraform validate
+
+      - name: validate examples
+        run: |
+          for dir in examples/*/; do
+            echo "==> ${dir}"
+            terraform -chdir="${dir}" init -backend=false
+            terraform -chdir="${dir}" validate
+          done
+
+      # The rule that makes the module consumable with count, for_each and depends_on.
+      # Cheap to check, easy to break by accident, and the breakage only shows up when
+      # somebody else tries to consume it.
+      - name: assert no provider blocks in the module
+        run: |
+          if grep -rEn '^\s*provider\s+"' modules/access-packages/ --include='*.tf'; then
+            echo "::error::provider block found in modules/access-packages/."
+            echo "Provider configuration belongs to the root and to examples/*/providers.tf."
+            echo "A module with a provider block cannot be used with count, for_each or depends_on."
+            exit 1
+          fi
+          echo "OK: no provider blocks."
+
+      # Repo 2 must never write to repo 1's state key.
+      - name: assert the backend key is not repo 1's
+        run: |
+          if grep -rn 'access-vending.tfstate' backend.hcl.example | grep -v 'vending_state_key' | grep -q 'key\s*='; then
+            echo "::error::backend.hcl.example writes to repo 1's state key."
+            exit 1
+          fi
+          echo "OK: backend key is separate from repo 1's."
+
+  # ----------------------------------------------------------------------------------
+  # Plan. Needs cloud credentials, so it is gated on the static checks passing.
+  # ----------------------------------------------------------------------------------
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    needs: validate
+    environment: poc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: init
+        run: terraform init -backend-config=backend.hcl
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+      # A failure here is usually one of: repo 1 not applied yet (empty contract),
+      # missing Storage Blob Data Reader on repo 1's state account, or one of the
+      # preconditions in modules/access-packages/main.tf catching a real problem. The
+      # error messages say which.
+      - name: plan
+        run: terraform plan -input=false -out=tfplan
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+      # Not uploaded as an artifact: the plan contains group object IDs and systemeier
+      # UPNs, and workflow artifacts are readable by anyone with repo read access.
+      - name: plan summary
+        run: terraform show -no-color tfplan | head -200
+
+  # ----------------------------------------------------------------------------------
+  # Apply. main only.
+  # ----------------------------------------------------------------------------------
+  apply:
+    name: apply
+    runs-on: ubuntu-latest
+    needs: plan
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: poc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: init
+        run: terraform init -backend-config=backend.hcl
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+      # Re-planned rather than applying the artifact from the plan job, since the plan
+      # file was deliberately not passed between jobs.
+      - name: apply
+        run: terraform apply -input=false -auto-approve
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+      # A green apply does NOT mean the access model holds. The roles the provider
+      # cannot express are listed here, and they need portal work. Surfacing them in the
+      # job summary means nobody has to remember to run terraform output.
+      - name: report what Terraform could not do
+        run: |
+          {
+            echo "## Manual steps still required"
+            echo
+            echo '```json'
+            terraform output -json manual_steps_required
+            echo '```'
+            echo
+            echo "## Resource roles excluded from IaC (blocker 2.1)"
+            echo
+            echo '```json'
+            terraform output -json excluded_resource_roles
+            echo '```'
+            echo
+            echo "## Verification summary"
+            echo
+            echo '```json'
+            terraform output -json verification_summary
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

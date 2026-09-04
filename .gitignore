@@ -2,50 +2,57 @@
 # Terraform
 # ==============================================================================
 
-# Provider-binærer og modulcache. Stor (hundrevis av MB) og reproduserbar.
+# Provider binaries and module cache. Large (hundreds of MB) and reproducible.
 **/.terraform/*
 
-# Lokal state. Repoet kjører uten backend, så disse vil inneholde
-# subscription-IDer, gruppe-object-IDer, UPN-er og PIM-policy i klartekst.
+# Local state. The examples run without a backend, so these would contain group
+# object IDs, UPNs and access package policy in cleartext.
 *.tfstate
 *.tfstate.*
 .terraform.tfstate.lock.info
 
-# Plan-filer. Inneholder samme sensitive verdier som state.
+# Plan files. Same sensitive values as state.
 *.tfplan
 *.tfplan.*
 plan.out
 
-# Crash-logger fra Terraform og providere.
+# Crash logs from Terraform and from providers.
 crash.log
 crash.*.log
 
 # ------------------------------------------------------------------------------
-# Variabelfiler
+# Variable files
 #
-# terraform.tfvars inneholder reelle subscription-IDer, systemeier-UPN,
-# eligible_user_principal_names og navn på godkjennergrupper. Skal aldri
-# committes. Eksempelfila med placeholders skal derimot ligge i git.
+# terraform.tfvars holds the real tenant ID, the state storage account name and any
+# per-scope overrides. Never commit it. The example file with placeholders does
+# belong in git.
 # ------------------------------------------------------------------------------
 *.tfvars
 *.tfvars.json
 !*.tfvars.example
 !terraform.tfvars.example
 
-# CLI-konfig som kan inneholde credentials eller mirror-oppsett.
+# Backend configuration. Names the storage account holding both repos' state, so it
+# is kept out even though it holds no secret by itself.
+backend.hcl
+!backend.hcl.example
+
+# CLI config, which can contain credentials or mirror settings.
 .terraformrc
 terraform.rc
 
 # ------------------------------------------------------------------------------
-# Lock-filer
+# Lock files
 #
-# Rot-modulens .terraform.lock.hcl SKAL committes — den pinner provider-
-# versjoner. Undermoduler pinner ikke, så deres lock-filer holdes ute.
+# The root module's .terraform.lock.hcl MUST be committed — it pins provider
+# versions. Child modules do not pin, and the examples are demonstrations rather
+# than deployments, so their lock files are kept out.
 # ------------------------------------------------------------------------------
 modules/**/.terraform.lock.hcl
+examples/**/.terraform.lock.hcl
 
 # ==============================================================================
-# Credentials og miljø
+# Credentials and environment
 # ==============================================================================
 
 .env
@@ -56,10 +63,11 @@ azure-credentials.json
 sp-credentials.json
 
 # ==============================================================================
-# Verktøy og OS
+# Tooling and OS
 # ==============================================================================
 
-# Mellomfiler fra diagram-generering. PNG og .drawio committes bevisst.
+# Intermediate files from diagram generation. PNG and .drawio are committed
+# deliberately.
 generated-diagrams/*.dot
 
 .DS_Store

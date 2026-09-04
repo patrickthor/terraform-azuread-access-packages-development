@@ -1,0 +1,12 @@
+tenant_id            = "8aacb043-2429-460e-b9d1-d81459e9330e"
+catalog_display_name = "Cloud Access"
+
+state_resource_group_name  = "rg-tfstate-poc"
+state_storage_account_name = "sttfstatepocbvt"
+vending_state_key          = "access-vending.tfstate"
+
+assignment_duration_days = 14
+
+scope_overrides = {
+  "tenant" = { assignment_duration_days = 7 }
+}

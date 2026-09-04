@@ -1,0 +1,19 @@
+# Backend configuration for repo 2's own state.
+#
+#   cp backend.hcl.example backend.hcl
+#   terraform init -backend-config=backend.hcl
+#
+# backend.hcl is gitignored.
+
+resource_group_name  = "rg-tfstate-poc"
+storage_account_name = "sttfstatepocbvt"
+container_name       = "tfstate"
+
+# Repo 2's key. Must NOT be access-vending.tfstate — that is repo 1's state, which
+# this repo reads through data.terraform_remote_state. Writing to it would destroy
+# the contract this repo depends on.
+key = "access-packages.tfstate"
+
+# Entra identity rather than a storage account key. One less long-lived credential,
+# and container access shows up in RBAC where it can be audited.
+use_azuread_auth = true
