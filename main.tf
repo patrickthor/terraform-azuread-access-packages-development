@@ -47,9 +47,10 @@ module "access_packages" {
   # what handles compatibility, and it fails loudly.
   vending = data.terraform_remote_state.vending.outputs.contract
 
-  catalogs        = var.catalogs
-  defaults        = var.defaults
-  scope_overrides = var.scope_overrides
+  catalogs          = var.catalogs
+  defaults          = var.defaults
+  packages          = var.packages
+  package_overrides = var.package_overrides
 
   manage_pim_for_groups_roles      = var.manage_pim_for_groups_roles
   acknowledge_m3_active_membership = var.acknowledge_m3_active_membership

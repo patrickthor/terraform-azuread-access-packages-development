@@ -172,7 +172,13 @@ module "access_packages" {
     grant_approver_group = true
   }
 
-  scope_overrides = {
+  # var.packages is deliberately NOT set here: this example verifies the DEFAULT path —
+  # one package per scope, every role in it. See examples/named-packages for the
+  # several-audiences-per-scope shape.
+  #
+  # package_overrides is keyed on package name, and package names are scope names on the
+  # default path, so this reads exactly as scope_overrides did.
+  package_overrides = {
     # Terraform can set no activation rules for directory roles, so gate 1 is the only
     # control it enforces here. Short duration is the mitigation available in code.
     "tenant" = { assignment_duration_days = 7 }

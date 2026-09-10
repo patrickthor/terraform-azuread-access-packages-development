@@ -3,7 +3,7 @@
 **Start here** after a break or when opening a new session. Written to give full context
 without reading the code first.
 
-Last updated: 4 September 2026
+Last updated: 10 September 2026
 Status: **restructured onto the two-module contract. Not yet applied against Azure.**
 
 ---
@@ -137,6 +137,33 @@ form worked and was one repo-1 refactor away from `The "for_each" value depends 
 attributes that cannot be determined until apply` — surfacing in this module for a change
 made in the other repo.
 
+**Named access packages.** `var.packages` builds several packages over the same groups, so
+one scope can serve more than one audience — "engineers get reader and contributor, admins
+also get owner". A package grants everything in it atomically, so a scope-wide package could
+not express that.
+
+Everything that was keyed on scope is now keyed on **package**: resource roles, the expiry
+ceiling, the empty-package check, and `scope_overrides` → `package_overrides`. The per-scope
+behaviour is not a separate code path — with `var.packages` empty, `locals.tf` generates one
+package definition per scope and the result is identical to before. That was the constraint
+that mattered most: the zero-config promise outranks the feature.
+
+Three consequences worth knowing:
+
+- **Expiry ceilings are per package**, taken from the roles that package grants. Previously
+  every package in a scope inherited the shortest ceiling in the whole scope.
+- **Catalog associations are keyed on `(catalog, role)`**, not on the role alone. A package
+  can name its own catalog, so two packages in different catalogs can share a role and each
+  needs its own association. Keyed on the role alone, one would silently go missing and the
+  second package's association would fail at apply.
+- **A new `unpackaged_roles` output.** With explicit packages, a contract role might be in no
+  package — access repo 1 created that nobody can request. Reported, never silent.
+
+Repo 1 is unchanged, and deliberately so: Azure keys `azurerm_role_management_policy` on
+(ARM scope, role definition), so there is one activation policy per role per subscription.
+Two groups eligible for Contributor on one subscription would share it, so duplicating the
+role buys no governance. Only the packaging layer can differentiate audiences.
+
 **Provider constraints split.** Modules use `>=` so they never become a ceiling for a
 consumer; only roots pin. Roots pin to **patch** level (`~> 3.9.0`) and **no lock file is
 committed** — `required_providers` is the single source of truth. The cost is recorded in
@@ -149,7 +176,7 @@ reproducible.
 
 | # | Decision |
 |---|---|
-| D1 | One access package per **scope**, not per group and not per persona yet |
+| D1 | Packages are the unit. One per **scope** by default; `var.packages` names several per scope |
 | D2 | Gate 1 approval is the scope's `systemeier`; gate 2 stays repo 1's and is republished, never interpreted |
 | D3 | Catalog resource associations in the wrapper module, not the leaf — unique per `(catalog, group)`, and peer approval attaches one approver group to several packages |
 | D4 | `EligibleMember` roles are excluded, registered as catalog resources anyway, and reported |
@@ -159,6 +186,20 @@ reproducible.
 | D8 | One catalog per label; adoption supported; delegation off by default and never `Catalog owner` |
 | D9 | Fields this repo cannot honour are rejected, not accepted and dropped |
 | D10 | The module takes a typed object; where the contract comes from is the root's decision |
+| D11 | A package may not span scopes — rejected at plan time, not resolved |
+| D12 | Catalog associations keyed on `(catalog, role)`, so a shared role across catalogs gets one association each |
+
+### Why cross-scope packages are rejected rather than resolved
+
+A package's gate 1 approvers are the systemeier of its scope. Once a package can name
+arbitrary roles it could span scopes, and then there is no single answer. The union of every
+touched scope's systemeier would let an owner of one scope approve entry to another — a quiet
+privilege expansion. Requiring each scope's systemeier in turn is not expressible at all,
+because the provider allows one approval stage per assignment policy.
+
+Every case in front of us is single-scope, so the honest option is to reject and say why. The
+decision is recorded at the gate 1 note in `modules/access-packages/locals.tf`, which is
+where to reopen it when a genuine cross-scope persona appears.
 
 ### Why the ceiling covers excluded roles
 
@@ -234,6 +275,7 @@ In order.
 | 5 | Same identity as repo 1? | Yes, and effectively required by `CallerNotResourceOwner` |
 | 6 | Does a mixed `entra_role` scope stay one package? | For now. Splitting `Directory Readers` from `Groups Administrator` is defensible |
 | 7 | Any package needing genuine two-stage approval? | None today. Gate 1 is the only place it is possible, and the leaf module supports two stages |
+| 9 | Is a cross-scope persona coming? | Not yet. Rejected at plan time until it is, with the union plus an acknowledgement flag as the likely answer |
 | 8 | Open a provider PR for the `EligibleMember` allowlist? | Worth doing regardless of the answer to 2 |
 
 ---

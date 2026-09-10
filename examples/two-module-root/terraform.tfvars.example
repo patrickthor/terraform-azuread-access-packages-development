@@ -22,7 +22,7 @@ defaults = {
   grant_approver_group     = true
 }
 
-scope_overrides = {}
+package_overrides = {}
 
 # In the real thing, this is the one place the access taxonomy is described, and repo 1
 # turns it into groups, RBAC bindings and PIM policies. Repo 2 needs no equivalent block:

@@ -201,13 +201,102 @@ variable "defaults" {
   }
 }
 
-variable "scope_overrides" {
+variable "packages" {
   description = <<-EOT
-    Per-scope deviations from `defaults`, keyed on scope key. Omitted fields fall back to
-    `defaults`.
+    Named access packages, keyed on package name. OPTIONAL — leave it empty and the module
+    behaves exactly as before: one package per scope, containing every role in that scope.
 
-    Every key must match a scope that exists in the contract. A typo is rejected rather
-    than silently having no effect.
+    Set it when one scope needs more than one audience. A package grants everything in it
+    atomically, so a scope-wide package cannot express "engineers get reader and
+    contributor, admins also get owner". Named packages can, over the same groups:
+
+      packages = {
+        "engineers" = {
+          display_name = "Prod Engineer Access"
+          role_keys    = ["prod--reader", "prod--contributor"]
+        }
+        "admins" = {
+          display_name             = "Prod Admin Access"
+          role_keys                = ["prod--reader", "prod--contributor", "prod--owner"]
+          assignment_duration_days = 7
+          grant_approver_group     = true
+        }
+      }
+
+    Setting this replaces the per-scope default entirely — it is not merged with it. Any
+    role you do not name is reported in the unpackaged_roles output rather than quietly
+    dropped.
+
+    Every entry in role_keys must exist in the contract; unknown keys fail the plan.
+
+    A package must stay within ONE scope. Gate 1 approval comes from the scope's
+    systemeier, and a package spanning scopes has no single answer — see the gate 1 note
+    in locals.tf for why the alternatives were rejected.
+
+    `catalog` defaults to the catalog of the package's scope. Naming a different one is how
+    a privileged package gets its own delegation boundary, and it must still be a label the
+    contract defines: repo 1 owns the catalog label set.
+
+    The junior/senior split is two packages over the same scope where only one sets
+    grant_approver_group. Seniors approve peers; juniors request and activate but never
+    appear as an approver.
+  EOT
+
+  type = map(object({
+    role_keys = list(string)
+
+    display_name = optional(string)
+    description  = optional(string)
+    catalog      = optional(string)
+
+    assignment_duration_days = optional(number)
+    requestor_scope_type     = optional(string)
+    require_justification    = optional(bool)
+    approval_timeout_days    = optional(number)
+    question_text            = optional(string)
+    hidden                   = optional(bool)
+    requests_accepted        = optional(bool)
+    grant_approver_group     = optional(bool)
+  }))
+
+  default = {}
+
+  validation {
+    condition     = alltrue([for p in values(var.packages) : length(p.role_keys) > 0])
+    error_message = <<-EOT
+      Every package must name at least one role in role_keys.
+
+      A package with no roles is still requestable and still approvable, so it appears in
+      MyAccess as working access while granting nothing. That is worse than the package not
+      existing. If the intent was a package that only grants peer-approval rights, say so
+      explicitly with grant_approver_group and at least one role.
+    EOT
+  }
+
+  validation {
+    condition = alltrue([
+      for p in values(var.packages) : length(p.role_keys) == length(distinct(p.role_keys))
+    ])
+    error_message = <<-EOT
+      A package lists the same role key twice in role_keys.
+
+      Duplicates are rejected rather than deduplicated: the map of resource roles is keyed
+      on the role key, so a repeat would silently collapse and the package would look like
+      it grants more than it does.
+    EOT
+  }
+}
+
+variable "package_overrides" {
+  description = <<-EOT
+    Per-package deviations from `defaults`, keyed on PACKAGE name. Omitted fields fall back
+    to the package definition, then to `defaults`.
+
+    When `packages` is empty, package names are scope names, so this overrides per scope —
+    which is what it did under its previous name, `scope_overrides`.
+
+    Every key must match a package that exists. A typo is rejected rather than silently
+    having no effect.
   EOT
 
   type = map(object({

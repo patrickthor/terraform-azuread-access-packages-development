@@ -43,8 +43,25 @@ defaults = {
   grant_approver_group = true
 }
 
-# Only where you deviate from defaults.
-scope_overrides = {
+# Named packages. Leave unset for the default: one package per scope, every role in it.
+# Set it when one scope needs more than one audience over the same groups:
+#
+# packages = {
+#   "prod-engineers" = {
+#     display_name = "Prod Engineer Access"
+#     role_keys    = ["prod--reader", "prod--contributor"]
+#   }
+#   "prod-admins" = {
+#     display_name             = "Prod Admin Access"
+#     role_keys                = ["prod--reader", "prod--contributor", "prod--owner"]
+#     assignment_duration_days = 7
+#     grant_approver_group     = true   # the senior tier approves peers
+#   }
+# }
+
+# Only where you deviate from defaults. Keyed on PACKAGE name; on the default path those
+# are scope names.
+package_overrides = {
   # Terraform can set no activation rules for Entra directory roles, so gate 1 is the
   # only control it enforces on this package. A short duration is the mitigation
   # available in code.

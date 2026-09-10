@@ -9,8 +9,10 @@ having been applied, without a storage account, and without any state-reading pe
 It doubles as executable documentation of the contract. If repo 1 changes an output, this
 fixture is the first place the mismatch shows up.
 
-For the architecture a customer should actually copy — one root, both modules, contract in
-memory — see `examples/two-module-root`.
+This example uses the **default** package path: `var.packages` is unset, so the module
+produces one package per scope with every role in it. See `examples/named-packages` for
+several tiers over the same groups, and `examples/two-module-root` for the architecture a
+customer should actually copy.
 
 ## Running it
 
@@ -73,7 +75,7 @@ Each should **fail the plan**, which is the behaviour worth verifying:
 | `assignment_duration_days = 20` | `jaws` breaches its 15-day ceiling, error names `jaws--billing` — `validate_assignment_expiry_ceiling` |
 | `manage_pim_for_groups_roles = true` alone | Requires the acknowledgement — variable validation |
 | Add `"platfrom" = {}` to `catalogs` | Unknown catalog label — `validate_configuration` |
-| Rename `"tenant"` in `scope_overrides` to `"tenat"` | Unknown scope — `validate_configuration` |
+| Rename `"tenant"` in `package_overrides` to `"tenat"` | Unknown package — `validate_configuration` |
 | Empty a scope's `systemeier` list | Gate 1 unsatisfiable — `validate_gate_1_approvers` |
 | Point `morkanaught` and `jaws` at the same `approver_group_name` | Duplicate `(catalog, group)` — `validate_no_duplicate_catalog_resources` |
 | Set `contract_version = 2` | Version mismatch — variable validation |

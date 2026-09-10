@@ -115,27 +115,65 @@ variable "catalogs" {
 - `externally_visible` stays `false` by default. Every scope in this system grants cloud
   access and none of it is meant for guests.
 
-### 4. Packages stay one-per-scope
+### 4. Packages: one per scope by DEFAULT, several per scope on request
 
-An access package grants everything in it atomically, so its natural unit is "membership
-of the team that works on this scope", not "one individual permission". That works because
-repo 1's groups are PIM-managed: membership is not privilege, activation is. A package can
-say "you belong here, here is your baseline plus your escalation paths" and PIM still
-gates each escalation.
+**IMPLEMENTED. This supersedes the earlier "packages stay one-per-scope".**
 
-A package belongs to the catalog of its scope's label. Packages in different catalogs never
-share resource associations, because a catalog resource association is unique per
-`(catalog, group)` — so the associations must be keyed on `(catalog, group)`, not on group
-alone. **This is the one place catalog support changes existing code**, and getting it
-wrong produces a duplicate-association failure at apply, not at plan.
+An access package grants everything in it atomically, so its natural unit is an audience,
+not an individual permission. That works because repo 1's groups are PIM-managed:
+membership is not privilege, activation is. A package can say "you belong here, here is
+your baseline plus your escalation paths" and PIM still gates each escalation.
 
-Keep the associations in the wrapper module rather than the leaf. They are unique per
-`(catalog, group)`, and under peer approval the same approver group attaches to several
-packages in the same catalog.
+Because a package is atomic, one package per scope means one audience per scope, which
+cannot express "engineers get reader+contributor, admins get reader+contributor+owner" on
+one subscription. `var.packages` names several packages over the same groups:
 
-Persona packages spanning several scopes are a later extension. When they land, they are
-driven by *this* repo's variables and touch repo 1 not at all. The resource wiring
-survives; only the scope→package mapping changes.
+    packages = {
+      "engineers" = { role_keys = ["prod--reader", "prod--contributor"] }
+      "admins"    = { role_keys = ["prod--reader", "prod--contributor", "prod--owner"]
+                      assignment_duration_days = 7
+                      grant_approver_group     = true }
+    }
+
+Rules that hold:
+
+- **The default is unchanged.** With `var.packages` empty the module generates one package
+  definition per scope holding every role in it, and the result is identical to before the
+  feature. The zero-config promise outranks the feature, and this keeps it non-breaking.
+- **The per-scope path is a GENERATOR, not a second code path.** Everything keys on package
+  name. Do not fork the resource wiring.
+- Everything formerly keyed on scope is keyed on package: resource roles, the expiry
+  ceiling, the empty-package precondition, and `scope_overrides` -> `package_overrides`.
+- **The expiry ceiling is the minimum across the roles THAT PACKAGE grants**, not the
+  scope's, computed over the declared roles including any excluded by the EligibleMember
+  gap. Name the offending role in the error.
+- **Unknown role keys are rejected**, never skipped, with the known set named.
+- **A package may not span scopes.** Gate 1 approval is the scope's systemeier and a
+  cross-scope package has no single answer: a union lets an owner of scope A approve entry
+  to scope B, and per-scope stages are not expressible because the provider allows one
+  approval stage per policy. Rejected until a genuine cross-scope persona appears.
+- A package may name its own `catalog`, defaulting to its scope's. It must be a label the
+  contract defines — repo 1 owns the label set.
+- Roles no package grants are reported in `unpackaged_roles`, not silently dropped.
+
+**CATALOG ASSOCIATIONS ARE KEYED ON (catalog, role)**, written as `"{catalog}|{role_key}"`.
+Keying on the role alone worked only while catalog was derived from scope, making
+role -> catalog 1:1. A per-package catalog breaks that: two packages in different catalogs
+sharing a role need one association EACH, and a role-keyed map would create one and fail
+the second package's association at apply, not at plan. Catalog labels containing `|` are
+rejected so the composite key cannot collide.
+
+Two packages in the SAME catalog sharing a group is the other direction and already works:
+one catalog association, two package associations. That is how the approver group attaches
+to several packages.
+
+Keep the associations in the wrapper module rather than the leaf, for that same reason.
+
+Peer approval is per package now: `grant_approver_group` on the senior tier only. That is
+the junior/senior split, and it needs nothing from repo 1.
+
+Still outstanding: personas spanning several scopes. Blocked on the gate 1 question above,
+not on the resource wiring, which already keys on package name.
 
 ### 5. Delete `m3_max_duration_days`
 
@@ -179,10 +217,12 @@ module to run.
 | `catalogs` | Label → catalog ID, display name, created-or-adopted. |
 | `packages_by_catalog` | Which packages landed in which catalog. The catalog is a delegation boundary, so this is a security-relevant listing. |
 | `granted_groups_by_package` | What each package actually grants, after exclusions. |
+| `packages` | Per package: source (named/scope), scope, catalog, declared vs attached vs excluded roles. |
+| `unpackaged_roles` | Contract roles no package grants — access nobody can request. |
 | `gate_1_approvers` | Per package, the systemeier acting as named approvers. |
 | `gate_2_approvers` | Repo 1's activation rules, republished verbatim. |
 | `peer_approval_status` | Where the single-systemeier deadlock is resolved and where it is not. |
-| `verification_summary` | One line per package for reading a plan quickly. |
+| `verification_summary` | One line per package, including that package's own expiry ceiling. |
 
 ## Licensing — verify before building further
 

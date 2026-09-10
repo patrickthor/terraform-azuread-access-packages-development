@@ -1,8 +1,12 @@
 # `access-packages`
 
-Creates catalogs, one access package per scope, and one assignment policy per package —
-**derived entirely from repo 1's contract**. No group name, scope key or catalog label is
-written anywhere in this repo.
+Creates catalogs, access packages and their assignment policies — **derived from repo 1's
+contract**. No group name, scope key or catalog label is written anywhere in this repo.
+
+By default there is **one package per scope**, containing every role in that scope. Set
+`var.packages` to build several named packages over the same groups instead — the
+"engineers get reader+contributor, admins also get owner" case, which a scope-wide package
+cannot express because a package grants everything in it atomically.
 
 This is the field reference for the whole repo. `terraform.tfvars.example` points here
 rather than repeating it, so copied tfvars files do not carry a stale reference table.
@@ -16,14 +20,18 @@ rather than repeating it, so copied tfvars files do not carry a stale reference 
 | `azuread_access_package_catalog` | 1 per catalog label, unless adopted | `modules/access-package-catalog` |
 | `azuread_access_package_catalog_role_assignment` | per delegated systemeier, off by default | `modules/access-package-catalog` |
 | `azuread_access_package_resource_catalog_association` | 1 per `(catalog, group)`, **including excluded groups** | this module |
-| `azuread_access_package` | 1 per scope | `modules/access-package` |
+| `azuread_access_package` | 1 per package (default: 1 per scope) | `modules/access-package` |
 | `azuread_access_package_resource_package_association` | 1 per granted group | `modules/access-package` |
 | `azuread_access_package_assignment_policy` | 1 per package | `modules/access-package` |
 
 The catalog associations live in **this** module rather than in `access-package`. They are
-unique per `(catalog, group)`, and under peer approval the same approver group attaches to
-several packages in the same catalog — creating the association in the leaf would produce
-duplicates and fail.
+unique per `(catalog, group)`, and several packages in one catalog legitimately share a
+group — creating the association in the leaf would produce duplicates and fail.
+
+`scope` is no longer the unit of anything except gate 1 approval. Everything else keys on
+**package name**, and the per-scope default is one way of generating package definitions
+rather than a separate code path. That is what keeps named packages non-breaking: with
+`var.packages` empty, the generated definitions reproduce the previous behaviour exactly.
 
 ---
 
@@ -36,7 +44,7 @@ One input, `vending`, taking repo 1's single `contract` output. Full definition 
 
 | Field | Used for |
 |---|---|
-| `scope` | which package the role joins |
+| `scope` | the package's single scope, and therefore its gate 1 approvers |
 | `role` | reporting |
 | `group_name` | reporting and the manual-step instructions |
 | `group_object_id` | `resource_origin_id` on the catalog association |
@@ -119,6 +127,22 @@ applies and where Terraform governs it. It does **not** carry repo 1's per-role
 lists the scope's systemeier and approver group because those are the two pools repo 1
 draws from, not because this module worked out which applies.
 
+### Gate 1 and cross-scope packages
+
+A package's gate 1 approvers are the systemeier of its **single scope**. Packages spanning
+scopes are **rejected at plan time**, not resolved. The decision is explicit because both
+alternatives are wrong today:
+
+| Option | Why not |
+|---|---|
+| Union of every touched scope's systemeier | An owner of scope A could approve entry to scope B — a quiet privilege expansion |
+| Approval from each scope's systemeier in turn | Not expressible: the provider allows one approval stage per assignment policy |
+| **Reject until there is a real need** | **Chosen.** Every case in front of us is single-scope |
+
+Split the package by scope. When a genuine cross-scope persona appears, the gate 1 note in
+`locals.tf` is where to reopen it, and the union with an explicit acknowledgement flag is the
+likely answer.
+
 ---
 
 ## Inputs
@@ -175,13 +199,59 @@ around repo 1 entirely and granting access no PIM policy governs.
 | `approval_timeout_days` | `7` | Gate 1 only |
 | `grant_approver_group` | `true` | Peer approval — see below |
 
-### `scope_overrides`
+### `packages`
 
-Keyed on scope key; omitted fields fall back to `defaults`. Fields: `display_name`,
-`description`, `assignment_duration_days`, `requestor_scope_type`,
-`require_justification`, `approval_timeout_days`, `question_text`, `hidden`,
-`requests_accepted`. A key matching no scope **fails the plan** — an override that
-silently has no effect is worse than a typo caught at plan time.
+**Optional.** Leave it empty and the module behaves exactly as before: one package per
+scope, containing every role in that scope. The zero-config promise is not traded away for
+the feature.
+
+Set it when one scope needs more than one audience:
+
+```hcl
+packages = {
+  "prod-engineers" = {
+    display_name = "Prod Engineer Access"
+    role_keys    = ["prod--reader", "prod--contributor"]
+  }
+  "prod-admins" = {
+    display_name             = "Prod Admin Access"
+    role_keys                = ["prod--reader", "prod--contributor", "prod--owner"]
+    assignment_duration_days = 7
+    grant_approver_group     = true
+  }
+}
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `role_keys` | — | **Required.** Composite `{scope}--{role}` keys from the contract |
+| `display_name` | the package name | |
+| `description` | generated from the scope | |
+| `catalog` | the scope's catalog | Must be a label the contract defines |
+| `assignment_duration_days` | from `defaults` | Capped by the package's own expiry ceiling |
+| `requestor_scope_type`, `require_justification`, `approval_timeout_days`, `question_text`, `hidden`, `requests_accepted` | from `defaults` | |
+| `grant_approver_group` | from `defaults` | Per-tier peer approval — see below |
+
+Rules, all enforced at plan time:
+
+- Every `role_keys` entry must exist in the contract. Unknown keys **fail the plan** with
+  the known set listed — never skipped, because a package silently missing a role grants
+  less than it claims and nothing in the portal says so.
+- `role_keys` must be non-empty and free of duplicates.
+- A package must stay within **one scope**. See [gate 1](#gate-1-and-cross-scope-packages).
+- `catalog` must be a label the contract defines. Repo 1 owns the label set.
+- Setting `packages` **replaces** the per-scope default; it is not merged with it. Any role
+  no package names is reported in `unpackaged_roles`, not silently dropped.
+
+### `package_overrides`
+
+Keyed on **package name**; omitted fields fall back to the package definition, then to
+`defaults`. Same fields as a package minus `role_keys`, `catalog` and
+`grant_approver_group`.
+
+When `packages` is empty, package names are scope names — so this behaves exactly as its
+previous name, `scope_overrides`, did. A key matching no package **fails the plan**: an
+override that silently has no effect is worse than a typo caught at plan time.
 
 ### `manage_pim_for_groups_roles` / `acknowledge_m3_active_membership`
 
@@ -199,11 +269,18 @@ without the second fails validation.
 | `catalogs` | Label → ID, display name, created-or-adopted, standing delegation |
 | `packages_by_catalog` | Which packages landed in which catalog. Security-relevant: a catalog is a delegation boundary |
 | `granted_groups_by_package` | What each package grants, after exclusions |
+| `packages` | Per package: source (`named` / `scope`), scope, catalog, declared vs attached vs excluded roles |
+| `unpackaged_roles` | **Roles the contract vended that no package grants** — access nobody can request |
 | `gate_1_approvers` | Per package, the systemeier as named approvers |
-| `gate_2_approvers` | Repo 1's activation facts, republished |
-| `peer_approval_status` | Where the single-systemeier deadlock is resolved and where it is not |
+| `gate_2_approvers` | Repo 1's activation facts, republished, with `granted_by_packages` per role |
+| `peer_approval_status` | Per scope: which packages carry the approver group, and where the deadlock remains |
 | `verification_summary` | One line per package |
-| `access_package_ids`, `assignment_policy_ids`, `effective_policies`, `contract_version` | |
+| `scopes`, `access_package_ids`, `assignment_policy_ids`, `effective_policies`, `contract_version` | |
+
+`unpackaged_roles` is always empty on the default path, since the generated per-scope
+packages cover every role. Non-empty means repo 1 created a group, an RBAC binding and a
+PIM policy for access that cannot be requested — either a deliberate omission or a
+forgotten `role_keys` entry. Reported rather than assumed either way.
 
 ---
 
@@ -249,14 +326,19 @@ they can do.
 
 Repo 1 emits the ceiling as `max_assignment_days`, a number, so **nothing here parses
 ISO-8601**. Enforced per package as a plan-time precondition: `assignment_duration_days`
-must be at or below the minimum non-null `max_assignment_days` across the scope's roles. The
-error names the role that set the binding ceiling, because the ceiling comes from one role's
-PIM policy and the operator needs to know which.
+must be at or below the minimum non-null `max_assignment_days` across **the roles that
+package grants**. The error names the role that set the binding ceiling, because the ceiling
+comes from one role's PIM policy and the operator needs to know which.
 
-The ceiling is computed across **every** role in the scope, including those excluded by the
-EligibleMember gap. Those are expected to be added by hand in the portal, and once they are,
-their expiry constrains the package too. Using only the managed roles would let a too-long
-duration pass the plan and then start silently dropping access after the manual step.
+Per package, not per scope, and that is a concrete benefit of named packages: an engineers
+package holding only reader and contributor is not constrained by an owner role it does not
+grant. On the per-scope path every package in a scope inherited the shortest ceiling in it.
+
+The ceiling is computed across every role the package **declares**, including those excluded
+by the EligibleMember gap. Those are expected to be added by hand in the portal, and once
+they are, their expiry constrains the package too. Using only the attached roles would let a
+too-long duration pass the plan and then start silently dropping access after the manual
+step.
 
 ---
 
@@ -277,35 +359,51 @@ something subtly wrong in the portal.
 
 ### Why the association keys are what they are
 
-A catalog resource association is unique per `(catalog, group)`. Role groups are safe keyed
-on the composite role key: one group belongs to one role in one scope, and a scope sits in
-exactly one catalog, so the role key *is* a `(catalog, group)` key.
+A catalog resource association is unique per `(catalog, group)`, and they are keyed on
+`"{catalog}|{role_key}"`.
 
-Approver groups are not automatically safe. `approver_group_name` may point at a group repo 1
-does not manage, and two scopes could share it. Sharing across *different* catalogs is
-legitimate and must produce two associations — which is exactly why the key cannot be the
-group alone. Sharing inside the *same* catalog is a duplicate, and the provider reports it at
-apply, partway through, with resources already created.
+Before named packages, keying on the role key alone was *already* keying on
+`(catalog, group)`: a role belongs to one scope, a scope sits in one catalog, so
+role → catalog was 1:1. A per-package `catalog` breaks that. Two packages in **different**
+catalogs can now share a role, and that legitimately needs **two** associations, one per
+catalog — which a role-keyed map cannot represent. It would create one, and the second
+package's resource association would fail at **apply**, not at plan.
+
+Two packages in the **same** catalog sharing a role is the other direction: one catalog
+association, two package associations. The composite key is identical for both, so they
+collapse to a single entry, which is exactly right — and is already how the approver group
+attaches to several packages.
+
+A catalog label containing a literal `|` would make two different `(catalog, role)` pairs
+collide on one key, so that is rejected in `validate_configuration` rather than silently
+mis-keyed.
+
+Approver groups need one more guard. `approver_group_name` may point at a group repo 1 does
+not manage, and two scopes could share it. Sharing across *different* catalogs is legitimate
+and must produce two associations. Sharing inside the *same* catalog is a duplicate, and the
+provider reports it at apply, partway through, with resources already created.
 `validate_no_duplicate_catalog_resources` turns that into a plan failure.
 
 ---
 
 ## Peer approval
 
-`grant_approver_group` defaults to `true`, attaching each scope's approver group to that
-scope's package as an extra resource role.
+`grant_approver_group` attaches the scope's approver group to a package as an extra resource
+role. It defaults to `true` via `defaults`, and can be set **per package** — which is what
+makes the junior/senior split a configuration choice rather than a code change.
 
 Repo 1 seeds each approver group with its `systemeier`, so dual-approval roles work on the
 first apply. But PIM blocks self-approval, so a group with exactly one member cannot approve
 that member's own request — the request times out after 24 hours, a timeout nobody can
 configure. Attaching the approver group makes everyone in the scope a peer approver.
 
-The cost is that any member can approve an `Owner` elevation, which a future junior/senior
-split fixes by giving juniors a package **without** the approver group. The leaf module
-already supports that: a package is just a different set of `resource_roles`.
+The cost is that any member can approve an `Owner` elevation. Named packages are the fix, and
+it is available now rather than "future": two packages over one scope where only the senior
+tier sets `grant_approver_group`. Juniors request and activate; they never appear as an
+approver. `peer_approval_status.*.granted_by_packages` names the tiers that carry it.
 
-Setting this `false` while a scope still has fewer than two systemeier fails the plan, because
-that leaves the deadlock in place with nothing to resolve it.
+If **no** package in a scope attaches the group and that scope has fewer than two systemeier,
+the plan fails — that leaves the deadlock in place with nothing to resolve it.
 
 ---
 
@@ -337,7 +435,21 @@ module "access_packages" {
     grant_approver_group     = true
   }
 
-  scope_overrides = {
+  # Optional. Omit for one package per scope with every role in it.
+  packages = {
+    "prod-engineers" = {
+      display_name = "Prod Engineer Access"
+      role_keys    = ["prod--reader", "prod--contributor"]
+    }
+    "prod-admins" = {
+      display_name             = "Prod Admin Access"
+      role_keys                = ["prod--reader", "prod--contributor", "prod--owner"]
+      assignment_duration_days = 7
+      grant_approver_group     = true
+    }
+  }
+
+  package_overrides = {
     "tenant" = { assignment_duration_days = 7 }
   }
 }
@@ -347,8 +459,9 @@ Pin tags, never branches. This module derives its whole package set from the con
 a floating ref a module change and a taxonomy change land in the same plan with nothing to
 tell them apart.
 
-Runnable variants: `examples/two-module-root` (the shape above) and `examples/complete`
-(literal contract fixture, local state, all three mechanisms and two catalogs).
+Runnable variants: `examples/two-module-root` (the shape above), `examples/complete` (literal
+contract fixture, local state, the default one-package-per-scope path) and
+`examples/named-packages` (the same fixture with several tiers per scope).
 
 ---
 
@@ -377,14 +490,18 @@ touches no ARM resources.
 
 ---
 
-## Future direction: personas
+## Future direction: cross-scope personas
 
-Today a package means "membership of the team that works on this scope". Eventually packages
-will represent job functions spanning several scopes — junior, senior, developer, security,
-non-technical stakeholder — referencing composite keys across scopes.
+Named packages already deliver job-function packaging *within* a scope — junior, senior,
+read-only, admin — driven entirely by this repo's variables, touching repo 1 not at all.
 
-At that point gate 1 stops being a direct lookup: a package would inherit several `systemeier`
-lists and you would choose between a union, a nominated owning scope, or `requestorManager`.
-Persona packages are driven by *this* repo's variables and touch repo 1 not at all. The
-scope→package mapping in `locals.tf` is what gets replaced; the resource wiring in `main.tf`
-and both leaf modules survive unchanged.
+What remains is personas that span **several** scopes: one package granting prod-reader and
+staging-contributor together. That is blocked on the gate 1 question above, not on the
+resource wiring, which already keys on package name and would need no change. When it lands,
+`package_scope` in `locals.tf` stops being single-valued and gate 1 needs the union plus an
+explicit acknowledgement that a scope owner can then approve entry to another scope.
+
+Repo 1 stays out of it either way. Azure keys `azurerm_role_management_policy` on
+(ARM scope, role definition), so there is one activation policy per role per subscription:
+two groups eligible for Contributor on the same subscription would share it, and duplicating
+the role buys no extra governance. Only the packaging layer can differentiate audiences.

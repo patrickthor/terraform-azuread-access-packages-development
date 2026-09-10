@@ -5,7 +5,7 @@
 # All of it comes from repo 1's contract. Adding a scope, a role or a catalog in repo 1
 # needs no change here.
 #
-# The field reference for `catalogs`, `defaults` and `scope_overrides` lives in
+# The field reference for `packages`, `catalogs`, `defaults` and `package_overrides` lives in
 # modules/access-packages/README.md and is deliberately not duplicated into tfvars
 # comments — copied reference tables end up in user files and never get updated.
 # ==============================================================================
@@ -97,8 +97,36 @@ variable "defaults" {
   default = {}
 }
 
-variable "scope_overrides" {
-  description = "Per-scope deviations from `defaults`, keyed on scope key."
+variable "packages" {
+  description = <<-EOT
+    Named access packages, keyed on package name. Leave empty for the default: one package
+    per scope containing every role in that scope.
+
+    Set it when one scope needs more than one audience — "engineers get reader and
+    contributor, admins also get owner" over the same groups. Field reference in
+    modules/access-packages/README.md.
+  EOT
+  type = map(object({
+    role_keys = list(string)
+
+    display_name = optional(string)
+    description  = optional(string)
+    catalog      = optional(string)
+
+    assignment_duration_days = optional(number)
+    requestor_scope_type     = optional(string)
+    require_justification    = optional(bool)
+    approval_timeout_days    = optional(number)
+    question_text            = optional(string)
+    hidden                   = optional(bool)
+    requests_accepted        = optional(bool)
+    grant_approver_group     = optional(bool)
+  }))
+  default = {}
+}
+
+variable "package_overrides" {
+  description = "Per-package deviations from `defaults`, keyed on package name. When `packages` is empty, package names are scope names."
   type = map(object({
     display_name             = optional(string)
     description              = optional(string)

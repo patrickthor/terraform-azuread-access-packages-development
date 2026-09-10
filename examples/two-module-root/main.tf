@@ -99,7 +99,8 @@ module "access_packages" {
   # In the real thing: vending = module.access_vending.contract
   vending = local.access_vending_contract
 
-  catalogs        = var.catalogs
-  defaults        = var.defaults
-  scope_overrides = var.scope_overrides
+  catalogs          = var.catalogs
+  defaults          = var.defaults
+  packages          = var.packages
+  package_overrides = var.package_overrides
 }

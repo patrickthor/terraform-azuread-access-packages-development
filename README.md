@@ -71,7 +71,8 @@ This repo owns gate 1 only. It republishes what the contract carries about gate 
 │
 ├── examples/
 │   ├── two-module-root/         ← THE REFERENCE ARCHITECTURE. Copy this one.
-│   └── complete/                Literal contract fixture, local state, runs offline
+│   ├── complete/                Literal contract fixture, default one-package-per-scope
+│   └── named-packages/         Same fixture, several tiers per scope
 │
 ├── scripts/
 │   ├── grant-graph-permissions.sh
@@ -106,14 +107,50 @@ but a *stale* state still plans cleanly.
 
 ---
 
-## One package per scope
+## Packages
 
 **Not one per group.** An access package grants everything in it atomically, so its natural
-unit is "membership of the team that works on this scope", not "one individual permission".
+unit is an audience, not an individual permission.
 
 That works because repo 1's groups are PIM-managed: membership is not privilege, activation is.
 A package can say "you belong here, here is your baseline plus your escalation paths", and PIM
 still gates each escalation with its own approval, MFA and time limit.
+
+**Default: one package per scope**, containing every role in that scope. Nothing to configure.
+
+**Named packages** when one scope needs more than one audience. Because a package is atomic, a
+scope-wide package cannot express "engineers get reader and contributor, admins also get
+owner" — so `var.packages` builds several packages over the same groups:
+
+```hcl
+packages = {
+  "prod-engineers" = { role_keys = ["prod--reader", "prod--contributor"] }
+  "prod-admins"    = {
+    role_keys                = ["prod--reader", "prod--contributor", "prod--owner"]
+    assignment_duration_days = 7
+    grant_approver_group     = true   # the senior tier approves peers
+  }
+}
+```
+
+Three things follow, and they are the reason the feature is worth having:
+
+- The **junior/senior split** becomes configuration. Only the tier with
+  `grant_approver_group` carries peer-approval rights; juniors request and activate but never
+  appear as an approver.
+- **Expiry ceilings are per package.** A package is only capped by the roles it actually
+  grants, so an engineers tier is not limited by an owner role it does not include.
+- A tier can have **its own catalog**, giving a privileged package its own delegation
+  boundary.
+
+A package must stay within one scope: gate 1 approval comes from the scope's systemeier, and a
+cross-scope package has no single answer. That is rejected at plan time rather than resolved —
+see `modules/access-packages/README.md`.
+
+**Repo 1 does not change for any of this.** Azure keys `azurerm_role_management_policy` on
+(ARM scope, role definition), so there is one activation policy per role per subscription.
+Duplicating a role there would buy no extra governance; only the packaging layer can
+differentiate audiences.
 
 ---
 
@@ -152,6 +189,7 @@ Terraform today, and a green apply says nothing about them.
 # Check the derivation against what repo 1 vended
 terraform output verification_summary
 terraform output packages_by_catalog
+terraform output unpackaged_roles     # roles vended but not requestable — should be empty
 ```
 
 ---
@@ -335,5 +373,6 @@ Editable `.drawio` counterparts alongside; the `.dot` intermediates are gitignor
 - `.kiro/steering/access-packages-module.md` — this repo's brief
 - `examples/two-module-root/README.md` — the architecture to copy
 - `examples/complete/README.md` — what to expect from the derivation, and how to make it fail
+- `examples/named-packages/README.md` — several audiences over the same groups
 - `PROSJEKT-SAMMENDRAG.md` — status, decisions and risks. Start here after a break
 - `OPPGAVE.md` — the original assignment text

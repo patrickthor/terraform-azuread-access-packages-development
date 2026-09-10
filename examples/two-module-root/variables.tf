@@ -52,8 +52,29 @@ variable "defaults" {
   default = {}
 }
 
-variable "scope_overrides" {
-  description = "Per-scope deviations from `defaults`, keyed on scope key."
+variable "packages" {
+  description = "Named access packages, keyed on package name. Empty means one package per scope."
+  type = map(object({
+    role_keys = list(string)
+
+    display_name = optional(string)
+    description  = optional(string)
+    catalog      = optional(string)
+
+    assignment_duration_days = optional(number)
+    requestor_scope_type     = optional(string)
+    require_justification    = optional(bool)
+    approval_timeout_days    = optional(number)
+    question_text            = optional(string)
+    hidden                   = optional(bool)
+    requests_accepted        = optional(bool)
+    grant_approver_group     = optional(bool)
+  }))
+  default = {}
+}
+
+variable "package_overrides" {
+  description = "Per-package deviations from `defaults`, keyed on package name."
   type = map(object({
     display_name             = optional(string)
     description              = optional(string)
