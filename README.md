@@ -86,8 +86,9 @@ This repo owns gate 1 only. It republishes what the contract carries about gate 
 lets a caller use `count`, `for_each` and `depends_on` — and `examples/two-module-root` uses
 `count` on the module, so the rule is load-bearing rather than stylistic. CI asserts it.
 
-Modules use `>=` provider constraints so they never become a ceiling; roots use `~>` and
-commit a lockfile.
+Modules use `>=` provider constraints so they never become a ceiling. Roots pin to patch
+level (`~> 3.9.0`), and **no lock file is committed** — `required_providers` is the single
+source of truth. `.gitignore` records what that costs.
 
 ### About this repo's root
 

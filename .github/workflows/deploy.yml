@@ -161,10 +161,59 @@ jobs:
         run: |
           if grep -rEn 'version\s*=\s*"~>' modules/ --include='versions.tf'; then
             echo "::error::a module pins a provider with ~>."
-            echo "Modules use >= so they never become a ceiling. Roots use ~> and commit a lockfile."
+            echo "Modules use >= so they never become a ceiling. Only roots pin, to patch level."
             exit 1
           fi
           echo "OK: modules use >=."
+
+      # No lock file is committed, so required_providers is the only thing bounding a
+      # provider version. A two-segment root pin such as ~> 3.9 admits every future minor,
+      # which is how a runner ends up on a version nobody chose.
+      - name: assert roots pin providers to patch level
+        run: |
+          fail=0
+          for f in versions.tf examples/*/versions.tf; do
+            while IFS= read -r line; do
+              v=$(printf '%s' "$line" | sed -E 's/.*"~> *([0-9.]+)".*/\1/')
+              segs=$(printf '%s' "$v" | awk -F. '{print NF}')
+              if [ "$segs" -ne 3 ]; then
+                echo "::error file=$f::root pin '~> $v' is not patch-level; use three segments (e.g. ~> ${v}.0)"
+                fail=1
+              fi
+            done < <(grep -E 'version\s*=\s*"~>' "$f" || true)
+          done
+          [ "$fail" -eq 0 ] && echo "OK: all root pins are patch-level."
+          exit $fail
+        shell: bash
+
+      # Reversal of an earlier rule. required_providers is the single source of truth for
+      # provider versions; a committed lock file is a second one, and the two drift.
+      - name: assert no lock file is committed
+        run: |
+          if git ls-files --error-unmatch '*.terraform.lock.hcl' >/dev/null 2>&1; then
+            echo "::error::a .terraform.lock.hcl is tracked in git."
+            echo "Lock files are not committed in any of the three repos. Run:"
+            echo "  git rm --cached path/to/.terraform.lock.hcl"
+            echo "Note that a .terraform/ ignore rule does NOT cover it — the lock file is a"
+            echo "sibling file, not something inside that directory."
+            exit 1
+          fi
+          echo "OK: no lock file committed."
+
+      # -upgrade re-resolves to the newest allowed version on every run, which is how a
+      # runner moves onto a new major with nobody choosing it. With no lock file to bypass
+      # it is inert as well as misleading.
+      # The bracket in -upgrad[e] keeps this check from matching its own source line.
+      - name: assert init does not re-resolve provider versions
+        run: |
+          if grep -rnE 'terraform init[^|]*-upgrad[e]' .github/workflows/; then
+            echo "::error::an init in this workflow re-resolves provider versions."
+            echo "Drop that flag. If lock files are ever reintroduced, use -lockfile=readonly"
+            echo "instead, which fails when the lock file and the constraints disagree rather"
+            echo "than rewriting it inside a container that is about to be discarded."
+            exit 1
+          fi
+          echo "OK: no version re-resolution in CI."
 
       # Repo 2 must not write to repo 1's state key.
       - name: assert the backend key is not repo 1's

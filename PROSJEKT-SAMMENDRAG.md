@@ -138,7 +138,10 @@ attributes that cannot be determined until apply` — surfacing in this module f
 made in the other repo.
 
 **Provider constraints split.** Modules use `>=` so they never become a ceiling for a
-consumer; roots use `~>` and commit a lockfile.
+consumer; only roots pin. Roots pin to **patch** level (`~> 3.9.0`) and **no lock file is
+committed** — `required_providers` is the single source of truth. The cost is recorded in
+`.gitignore`: no provider checksum verification, and past deploys are not exactly
+reproducible.
 
 ---
 

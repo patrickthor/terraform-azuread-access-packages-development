@@ -371,9 +371,9 @@ Neither this module nor its children declares a `provider` block. That is what l
 use `count`, `for_each` and `depends_on` — and `examples/two-module-root` uses `count` on this
 module, so it is load-bearing rather than stylistic. CI asserts it.
 
-Provider constraints here are `>=` so the module never becomes a version ceiling. Roots pin
-with `~>` and commit a lockfile. `azurerm` is absent entirely: this module touches no ARM
-resources.
+Provider constraints here are `>=` so the module never becomes a version ceiling. Only roots
+pin, to patch level, and no lock file is committed. `azurerm` is absent entirely: this module
+touches no ARM resources.
 
 ---
 

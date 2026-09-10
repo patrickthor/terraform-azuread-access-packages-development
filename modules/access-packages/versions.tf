@@ -1,8 +1,8 @@
 # No provider blocks in this module or its children. That is what lets a caller use
 # count, for_each and depends_on on it, and the reference customer config uses count.
 #
-# >= rather than ~> so the module never becomes a version ceiling for a consumer. Roots
-# pin with ~> and commit a lockfile.
+# >= rather than ~> so the module never becomes a version ceiling for a consumer. Only
+# roots pin, and they pin to patch level since no lock file is committed.
 #
 # azurerm is deliberately absent: this module touches no ARM resources.
 terraform {

@@ -269,8 +269,27 @@ privilege-escalation path.
 
 - `required_version >= 1.9`. Cross-variable references in validation blocks are a 1.9
   feature and both modules use them.
-- Modules use `>=` provider constraints so they never become a ceiling. Roots use `~>`
-  and commit a lockfile.
+- Modules use `>=` provider constraints so they never become a ceiling for a consumer.
+  Only roots pin.
+- **Lock files are not committed, in any of the three repos.** `.terraform.lock.hcl` is
+  gitignored. `required_providers` is the single source of truth for provider versions;
+  a lock file is a second one, and two sources of truth for the same fact drift.
+  Note that a `.terraform/` ignore rule does **not** cover it — the lock file is a
+  sibling file, not something inside that directory.
+- Because there is no lock file to fall back on, **roots pin to PATCH level**: three
+  segments, `~> 5.4.0` and not `~> 5.0`. `~> 5.0` admits every future minor.
+- **Roots must declare every provider the configuration resolves**, including ones the
+  root never references itself. A provider reaching a root only through a module's `>=`
+  constraint used to be pinned by the lock file; with no lock file it is unbounded
+  forever.
+- `terraform init` in CI takes no `-upgrade`. It re-resolves to the newest allowed
+  version on every run, which is how a runner can move onto a new major with nobody
+  choosing it. If lock files are ever reintroduced, use `-lockfile=readonly`, which
+  fails the run when the lock file and the constraints disagree instead of rewriting it
+  inside a container that is about to be discarded.
+- The cost of having no lock file is real and is recorded in `.gitignore` beside the
+  rule: no checksum verification of provider binaries, and a past deploy cannot be
+  reproduced exactly because patch releases inside the constraint differ between runs.
 - Every non-obvious decision gets a comment saying *why*, not *what*. Both repos already
   read this way; keep it.
 - Guard nullable values in validations by **filtering nulls in the `for` clause**, not

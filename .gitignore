@@ -45,14 +45,36 @@ backend.hcl
 terraform.rc
 
 # ------------------------------------------------------------------------------
-# Lock files
+# Lock files — NOT committed, anywhere, in any of the three repos
 #
-# The root module's .terraform.lock.hcl MUST be committed — it pins provider
-# versions. Child modules do not pin, and the examples are demonstrations rather
-# than deployments, so their lock files are kept out.
+# Reversal of the earlier rule that the root lock file must be committed. There is
+# now one source of truth for provider versions: required_providers. A lock file is
+# a second one, and two sources of truth for the same fact drift.
+#
+# Note that the .terraform rule above does NOT cover this. ".terraform/" matches a
+# directory; ".terraform.lock.hcl" is a sibling FILE, not something inside it. That
+# is why lock files kept reappearing despite the directory being ignored, and why
+# this needs its own line.
+#
+# WHAT THIS COSTS. Recorded here, at the decision, rather than in a PR description:
+#
+#   * No checksum verification of provider binaries. The zh:/h1: hashes in the lock
+#     file were the only integrity check on the download. Nothing now detects a
+#     tampered or substituted provider package.
+#
+#   * A past deploy cannot be reproduced exactly. Patch releases inside the
+#     constraint will differ between runs, so "the version that was applied" is not
+#     recoverable from the repo alone — only the range it fell within.
+#
+# The price of dropping the lock file is that constraints must stand on their own:
+# ROOT configurations pin to PATCH level (three segments, ~> 3.9.0, not ~> 3.9),
+# and every provider the configuration resolves must be declared in the root even
+# if the root never references it. An undeclared provider is now unbounded forever,
+# because there is no lock file left to pin it accidentally.
+#
+# Reusable modules still use >=, so they never become a ceiling for a consumer.
 # ------------------------------------------------------------------------------
-modules/**/.terraform.lock.hcl
-examples/**/.terraform.lock.hcl
+.terraform.lock.hcl
 
 # ==============================================================================
 # Credentials and environment
