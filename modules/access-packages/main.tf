@@ -121,9 +121,13 @@ module "access_package" {
   requestor_justification_required = local.effective[each.key].require_justification
   question_text                    = local.effective[each.key].question_text
 
-  # Null unless a review is configured for this package AND the master switch is on. Reviewers
-  # are the scope's systemeier, resolved from the same data lookup as the approval stage above.
-  access_review = local.access_review_by_package[each.key]
+  # Null unless a review is configured for this package AND the master switch is on. Reviewers are
+  # the scope's systemeier, resolved from the same data lookup as the approval stage above.
+  #
+  # lookup with a null default: access_review_by_package deliberately omits packages with no
+  # review rather than storing a null for them, so that nothing has to index review_effective
+  # for a package that has no entry there. See locals.tf.
+  access_review = lookup(local.access_review_by_package, each.key, null)
 
   # Exactly one stage, holding the systemeier of the package's scope as named approvers.
   #
@@ -460,6 +464,8 @@ resource "terraform_data" "validate_access_reviews" {
     # defaults all three, so reaching here means a default was explicitly nulled.
     precondition {
       condition = alltrue([
+        # guard-ok: review_effective is keyed on exactly packages_with_review_config, so all three
+        # indexes are valid for every name independently of each other.
         for name in local.packages_with_review_config :
         local.review_effective[name].review_frequency != null
         && local.review_effective[name].duration_in_days != null
@@ -470,8 +476,10 @@ resource "terraform_data" "validate_access_reviews" {
         duration_in_days AND timeout_behavior to all be set once a review is enabled:
         ${join("\n", [for name in local.packages_with_review_config : "  ${name}: review_frequency=${coalesce(local.review_effective[name].review_frequency, "MISSING")} duration_in_days=${coalesce(tostring(local.review_effective[name].duration_in_days), "MISSING")} timeout_behavior=${coalesce(local.review_effective[name].timeout_behavior, "MISSING")}"])}
 
-        This module supplies a default for all three, so an explicit null is the only way to get
-        here. Remove the null rather than setting it.
+        This module coalesces all three to a default, so under the current code this cannot fire.
+        It is kept as an assertion that those defaults are still in place: remove one and the
+        failure would otherwise surface as the provider's own CustomizeDiff error, which does not
+        name the field.
       EOT
     }
 

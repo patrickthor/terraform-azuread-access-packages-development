@@ -194,18 +194,28 @@ variable "access_review" {
 
   default = null
 
+  # NOTE ON SHAPE. Each condition below iterates a list that is empty when the variable is null,
+  # so the attribute access happens inside the `for` body and only runs when there is an object to
+  # read. `var.access_review == null ? true : var.access_review.<attr>` would be the obvious
+  # spelling and is NOT safe: Terraform may evaluate both branches of a conditional, and this
+  # project has already had two bugs of exactly that shape reach a consumer's plan.
+  #
+  # The `null ? [] : [obj]` ternary itself is fine, because neither branch can error — building a
+  # one-element list around a null is legal, it is only reading an attribute off it that is not.
+
   validation {
-    condition = var.access_review == null ? true : contains(
-      ["weekly", "monthly", "quarterly", "halfyearly", "annual"],
-      var.access_review.review_frequency,
-    )
+    condition = alltrue([
+      for r in(var.access_review == null ? [] : [var.access_review]) :
+      contains(["weekly", "monthly", "quarterly", "halfyearly", "annual"], r.review_frequency)
+    ])
     error_message = "access_review.review_frequency must be one of: weekly, monthly, quarterly, halfyearly, annual."
   }
 
   validation {
-    condition = var.access_review == null ? true : contains(
-      ["Reviewers", "Self"], var.access_review.review_type,
-    )
+    condition = alltrue([
+      for r in(var.access_review == null ? [] : [var.access_review]) :
+      contains(["Reviewers", "Self"], r.review_type)
+    ])
     error_message = <<-EOT
       access_review.review_type must be "Reviewers" or "Self".
 
@@ -216,9 +226,10 @@ variable "access_review" {
   }
 
   validation {
-    condition = var.access_review == null ? true : contains(
-      ["keepAccess", "removeAccess"], var.access_review.timeout_behavior,
-    )
+    condition = alltrue([
+      for r in(var.access_review == null ? [] : [var.access_review]) :
+      contains(["keepAccess", "removeAccess"], r.timeout_behavior)
+    ])
     error_message = <<-EOT
       access_review.timeout_behavior must be "keepAccess" or "removeAccess".
 
@@ -230,14 +241,21 @@ variable "access_review" {
   }
 
   validation {
-    condition     = var.access_review == null ? true : var.access_review.duration_in_days >= 1 && var.access_review.duration_in_days <= 365
+    condition = alltrue([
+      for r in(var.access_review == null ? [] : [var.access_review]) :
+      r.duration_in_days >= 1 && r.duration_in_days <= 365
+    ])
     error_message = "access_review.duration_in_days must be between 1 and 365. It is how long each review campaign stays open, not how often it recurs."
   }
 
   validation {
-    condition = var.access_review == null ? true : (
-      var.access_review.review_type != "Reviewers" || length(var.access_review.reviewers) > 0
-    )
+    # Only the "Reviewers" case needs a reviewer list, so filter to those in the `for` clause
+    # rather than testing the type alongside the length.
+    condition = alltrue([
+      for r in(var.access_review == null ? [] : [var.access_review]) :
+      length(r.reviewers) > 0
+      if r.review_type == "Reviewers"
+    ])
     error_message = <<-EOT
       access_review.reviewers cannot be empty when review_type is "Reviewers".
 

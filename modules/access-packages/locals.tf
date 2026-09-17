@@ -159,6 +159,8 @@ locals {
   # any precondition could report it.
   resolvable_access_packages = {
     for name, p in local.access_package_defs : name => p
+    # guard-ok: unknown_role_keys_by_package is built over access_package_defs, the same source
+    # this loop iterates, so the index is valid for every name independently of the other operand.
     if length(local.unknown_role_keys_by_package[name]) == 0 && length(p.role_keys) > 0
   }
 
@@ -556,27 +558,48 @@ locals {
     name => local.review_effective[name].review_type == "Reviewers" ? local.v.scopes[local.package_scope[name]].systemeier : []
   }
 
-  # What the leaf module receives. Null for every package without a review, and for ALL packages
-  # when the master switch is off.
-  access_review_by_package = {
-    for name, kind in local.package_kind : name => (
-      var.enable_access_reviews && contains(local.packages_with_review_config, name)
-      ? {
-        review_frequency                = local.review_effective[name].review_frequency
-        review_type                     = local.review_effective[name].review_type
-        duration_in_days                = local.review_effective[name].duration_in_days
-        timeout_behavior                = local.review_effective[name].timeout_behavior
-        approver_justification_required = local.review_effective[name].approver_justification_required
-        reviewers = [
-          for upn in local.review_reviewer_upns[name] : {
-            object_id    = data.azuread_user.systemeier[upn].object_id
-            subject_type = "singleUser"
-          }
-        ]
-      }
-      : null
-    )
-  }
+  # Reviewed packages whose enum fields are ALL recognised, narrowed one condition at a time.
+  #
+  # access_review_by_package is keyed on this rather than on packages_with_review_config so the
+  # leaf module never receives a value its own variable validation would reject. Module input
+  # validation runs BEFORE a terraform_data precondition, so without this the leaf's generic
+  # "must be one of: weekly, monthly, ..." would win over the wrapper's message, which names the
+  # package and the offending value. The wrapper's preconditions still report on the full
+  # reviewed set, so nothing is skipped — the plan fails either way, just with a better error.
+  reviewed_packages_valid_type = [
+    for name in local.reviewed_packages_known_freq : name
+    if contains(local.review_valid_types, local.review_effective[name].review_type)
+  ]
+
+  reviewed_packages_deployable = [
+    for name in local.reviewed_packages_valid_type : name
+    if contains(local.review_valid_timeouts, local.review_effective[name].timeout_behavior)
+  ]
+
+  # What the leaf module receives, for the packages that actually get a review. Deliberately does
+  # NOT contain an entry per package: main.tf reads it with lookup(..., null), the same pattern
+  # ceiling_by_package uses.
+  #
+  # The earlier shape iterated every package and guarded the review_effective index with a
+  # ternary — `enabled && contains(...) ? { ...review_effective[name]... } : null`. That is the
+  # same trap as the `&&` in a `for` filter: this project's own rule says a ternary is not a
+  # dependable guard either, because Terraform may evaluate both branches. It would have indexed
+  # review_effective for every unreviewed package.
+  access_review_by_package = var.enable_access_reviews ? {
+    for name in local.reviewed_packages_deployable : name => {
+      review_frequency                = local.review_effective[name].review_frequency
+      review_type                     = local.review_effective[name].review_type
+      duration_in_days                = local.review_effective[name].duration_in_days
+      timeout_behavior                = local.review_effective[name].timeout_behavior
+      approver_justification_required = local.review_effective[name].approver_justification_required
+      reviewers = [
+        for upn in local.review_reviewer_upns[name] : {
+          object_id    = data.azuread_user.systemeier[upn].object_id
+          subject_type = "singleUser"
+        }
+      ]
+    }
+  } : {}
 
   # --- validation inputs ------------------------------------------------------
 
@@ -619,9 +642,18 @@ locals {
   ]
 
   # review_type "Reviewers" with an empty systemeier list has nobody to answer the campaign.
-  reviews_without_reviewers = [
+  #
+  # Two steps rather than one compound filter. Both indexes happen to be safe here — every key in
+  # packages_with_review_config exists in both maps — but the compound form is the shape that has
+  # bitten this file twice, and a future reader should not have to re-derive that it is fine.
+  reviewer_type_packages = [
     for name in local.packages_with_review_config : name
-    if local.review_effective[name].review_type == "Reviewers" && length(local.review_reviewer_upns[name]) == 0
+    if local.review_effective[name].review_type == "Reviewers"
+  ]
+
+  reviews_without_reviewers = [
+    for name in local.reviewer_type_packages : name
+    if length(local.review_reviewer_upns[name]) == 0
   ]
 
   # ----------------------------------------------------------------------------
@@ -634,21 +666,54 @@ locals {
   # Two distinct failures, because the fix is in a different place for each.
   # ----------------------------------------------------------------------------
 
-  # Packages where the review interval is at least the assignment duration. The general case.
-  reviews_outlasting_assignment = [
+  # ONE FILTER PER STEP. Each list below narrows the previous one with a SINGLE condition, so no
+  # expression ever indexes a map it has not already been narrowed to.
+  #
+  # The earlier shape combined the membership test and the lookup with `&&`:
+  #
+  #   for name, ceiling in local.ceiling_by_package : name
+  #   if contains(local.packages_with_review_config, name)
+  #   && ... local.review_effective[name].review_frequency ...
+  #
+  # which reached a consumer's plan as "Invalid index" on review_effective. Terraform does not
+  # guarantee `&&` short-circuits, so the index ran for names the membership test had rejected.
+  #
+  # ceiling_by_package and review_effective have DIFFERENT KEY SETS, and that difference is the
+  # normal case rather than an edge case: a pim_for_groups package has a ceiling, and a package
+  # only has a review_effective entry if someone configured a review for it. A scope using short
+  # expiry instead of a review is in the first set and not the second.
+  #
+  # This is the same class as the ceiling null bug noted 200 lines above. That note said to use
+  # lookup() where a value is needed for every package — the reasoning applies here too and was
+  # not carried down.
+
+  # Reviewed packages whose frequency is one we know an interval for. Everything below indexes
+  # review_interval_days, so an unrecognised frequency has to be removed first — that guard was
+  # also an `&&` before, and had simply not fired yet.
+  reviewed_packages_known_freq = [
     for name in local.packages_with_review_config : name
     if contains(local.review_valid_frequencies, local.review_effective[name].review_frequency)
-    && local.effective[name].assignment_duration_days <= local.review_interval_days[local.review_effective[name].review_frequency]
+  ]
+
+  # The general case: the review recurs at least as slowly as the assignment expires.
+  reviews_outlasting_assignment = [
+    for name in local.reviewed_packages_known_freq : name
+    if local.effective[name].assignment_duration_days <= local.review_interval_days[local.review_effective[name].review_frequency]
   ]
 
   # The cross-repo case: the assignment duration is CAPPED below the review interval by a role's
-  # PIM policy in the vending repo, so the two constraints cannot both be satisfied here. Keyed
-  # only on packages that have a ceiling, so no null reaches the comparison.
-  reviews_unsatisfiable_by_ceiling = [
+  # PIM policy in the vending repo, so the two constraints cannot both be satisfied here.
+  #
+  # Narrowed in two steps. First to reviewed packages that also have a ceiling — the intersection
+  # of the two key sets — then the comparison, which can now index both maps safely.
+  reviewed_packages_with_ceiling = [
     for name, ceiling in local.ceiling_by_package : name
-    if contains(local.packages_with_review_config, name)
-    && contains(local.review_valid_frequencies, local.review_effective[name].review_frequency)
-    && ceiling <= local.review_interval_days[local.review_effective[name].review_frequency]
+    if contains(local.reviewed_packages_known_freq, name)
+  ]
+
+  reviews_unsatisfiable_by_ceiling = [
+    for name in local.reviewed_packages_with_ceiling : name
+    if local.ceiling_by_package[name] <= local.review_interval_days[local.review_effective[name].review_frequency]
   ]
 
   # The general failure minus the cross-repo one, so each is reported once with the right fix.
@@ -752,6 +817,8 @@ locals {
 
   deadlocked_approver_scopes = [
     for s, group_name in local.scopes_with_approver_group : s
+    # guard-ok: s comes from scopes_with_approver_group, whose keys are a subset of v.scopes, so
+    # the index is valid for every s independently of the contains() test.
     if length(local.v.scopes[s].systemeier) < 2 && !contains(local.approver_package_scopes, s)
   ]
 

@@ -83,6 +83,19 @@ jobs:
             terraform -chdir="${dir}" validate
           done
 
+      # `terraform test` with mock_provider, so no Azure credentials and no network. These
+      # exercise the locals against real values, which `validate` does not do — every bug that
+      # has reached a consumer's plan so far passed validate cleanly.
+      #
+      # Caveat worth knowing: a test can only fail on the Terraform version running it. The
+      # short-circuit bugs these regressions cover do not reproduce on every patch release, so a
+      # green suite is necessary and not sufficient. The static checks below are the real guard.
+      - name: terraform test
+        run: |
+          cd modules/access-packages
+          terraform init -backend=false
+          terraform test
+
       # ----------------------------------------------------------------------------
       # Contract and structural invariants
       #
@@ -124,6 +137,41 @@ jobs:
             exit 1
           fi
           echo "OK: no try() around contract fields."
+
+      # A compound condition where one operand INDEXES a collection and another is meant to be
+      # the guard. Same root cause as the null check below, different symptom: "Invalid index"
+      # rather than "argument must not be null".
+      #
+      # Two bugs of this shape have reached a consumer's plan. Both were invisible to
+      # `terraform validate` AND to `terraform test` on a Terraform version that happens to
+      # short-circuit, so a passing test suite is not evidence. The only reliable defence is not
+      # writing the shape: narrow with one condition per step so nothing indexes a collection it
+      # has not already been filtered to.
+      #
+      # Where the index is provably valid regardless of the other operand — because the map
+      # shares its key set with the loop source — say so in a `guard-ok:` comment within the
+      # preceding few lines. That forces the reasoning to be written down rather than re-derived.
+      - name: assert compound conditions do not guard an index
+        run: |
+          fail=0
+          while IFS= read -r hit; do
+            f=${hit%%:*}; rest=${hit#*:}; n=${rest%%:*}
+            start=$(( n > 6 ? n - 6 : 1 ))
+            if ! sed -n "${start},${n}p" "$f" | grep -q 'guard-ok'; then
+              echo "::error file=$f,line=$n::compound condition indexes a collection with no guard-ok justification"
+              echo "  $hit"
+              fail=1
+            fi
+          done < <(grep -rnE '(&&|\|\|)' modules/ --include='*.tf' \
+                     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' \
+                     | grep -E '\[[^]]+\]')
+          if [ "$fail" -ne 0 ]; then
+            echo "Narrow with one condition per step, or add a guard-ok comment explaining why the"
+            echo "index is valid independently of the other operand."
+            exit 1
+          fi
+          echo "OK: no unjustified compound conditions around an index."
+        shell: bash
 
       # Terraform does not dependably short-circuit && and ||, so `x != null && <compare x>`
       # still evaluates the comparison and fails the whole expression with "argument must
