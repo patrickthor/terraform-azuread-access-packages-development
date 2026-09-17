@@ -20,7 +20,7 @@ rather than repeating it, so copied tfvars files do not carry a stale reference 
 | `azuread_access_package_catalog` | 1 per catalog label, unless adopted | `modules/access-package-catalog` |
 | `azuread_access_package_catalog_role_assignment` | per delegated systemeier, off by default | `modules/access-package-catalog` |
 | `azuread_access_package_resource_catalog_association` | 1 per `(catalog, group)`, **including excluded groups** | this module |
-| `azuread_access_package` | 1 per package (default: 1 per scope) | `modules/access-package` |
+| `azuread_access_package` | 1 per access package (default: 1 per scope) **+ 1 approver package per scope with an approver group** | `modules/access-package` |
 | `azuread_access_package_resource_package_association` | 1 per granted group | `modules/access-package` |
 | `azuread_access_package_assignment_policy` | 1 per package | `modules/access-package` |
 
@@ -71,6 +71,33 @@ One input, `vending`, taking repo 1's single `contract` output. Full definition 
 | Field | Used for |
 |---|---|
 | `scope_keys` | **the plan-safe iteration source** for a catalog's scopes |
+
+### Contract v2: the eligibility carrier group
+
+For `pim_for_groups` roles the contract now describes **two** groups:
+
+| Field | What it is |
+|---|---|
+| `group_object_id` | a **plain**, non-PIM-managed group. This is what the package attaches |
+| `pim_group_object_id` / `pim_group_name` | the **PIM-managed** group the plain group is an eligible member of |
+
+Repo 1 creates the plain group and makes it an eligible member of the PIM-managed one. So the
+access package attaches plain `Member` on a plain group — which the provider fully supports —
+and the user still activates through PIM to reach the real access.
+
+That removed the `EligibleMember` gap entirely. Under v1 these roles needed an access type the
+`azuread` provider cannot set, so this module excluded them and reported the gap for portal
+work. `access_type` is now `Member` for every mechanism, and the module rejects anything else
+rather than downgrading it.
+
+**v1 is not accepted with a branch.** Supporting both shapes would mean carrying the dead
+exclusion path plus a silent behaviour difference between two callers running the same module
+version. Pin both repos to matching tags.
+
+The expiry ceiling still comes from the **PIM-managed** group's `active_assignment_expire_after`
+(`max_assignment_days`), not from the plain group. The package assignment governs membership of
+the plain group; if that outlives the PIM eligibility the user keeps the membership and silently
+loses the ability to activate.
 
 ### Three validations, not eleven
 
@@ -197,7 +224,9 @@ around repo 1 entirely and granting access no PIM policy governs.
 | `requestor_scope_type` | `AllExistingDirectoryMemberUsers` | |
 | `require_justification` | `true` | |
 | `approval_timeout_days` | `7` | Gate 1 only |
-| `grant_approver_group` | `true` | Peer approval — see below |
+
+Applies to approver packages too.
+
 
 ### `packages`
 
@@ -217,7 +246,6 @@ packages = {
     display_name             = "Prod Admin Access"
     role_keys                = ["prod--reader", "prod--contributor", "prod--owner"]
     assignment_duration_days = 7
-    grant_approver_group     = true
   }
 }
 ```
@@ -230,7 +258,9 @@ packages = {
 | `catalog` | the scope's catalog | Must be a label the contract defines |
 | `assignment_duration_days` | from `defaults` | Capped by the package's own expiry ceiling |
 | `requestor_scope_type`, `require_justification`, `approval_timeout_days`, `question_text`, `hidden`, `requests_accepted` | from `defaults` | |
-| `grant_approver_group` | from `defaults` | Per-tier peer approval — see below |
+
+These packages grant ROLE GROUPS ONLY. Peer-approval rights are a separate package — see
+`approver_packages`.
 
 Rules, all enforced at plan time:
 
@@ -253,10 +283,45 @@ When `packages` is empty, package names are scope names — so this behaves exac
 previous name, `scope_overrides`, did. A key matching no package **fails the plan**: an
 override that silently has no effect is worse than a typo caught at plan time.
 
-### `manage_pim_for_groups_roles` / `acknowledge_m3_active_membership`
+### `approver_packages`
 
-Both `false`. See [the EligibleMember gap](#the-eligiblemember-gap). Setting the first
-without the second fails validation.
+Keyed on **scope key**. Peer-approval rights as their own package, granting only the scope's
+approver group and nothing else.
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | Set `false` to opt a scope out |
+| `display_name` | `"{scope} approver rights"` | |
+| `description` | generated | |
+| `assignment_duration_days` | from `defaults` | Often longer than the access packages — approval authority is an ongoing responsibility, not a task |
+| `requestor_scope_type`, `require_justification`, `approval_timeout_days`, `question_text`, `hidden`, `requests_accepted` | from `defaults` | |
+
+**One is created by default** for every scope whose contract entry has a non-null
+`approver_group_name`, so this variable is only needed to deviate. That preserves the previous
+default-on behaviour.
+
+**One per scope, not per package.** Repo 1 creates one approver group per scope, so a second
+approver package for a second audience in the same scope would grant the identical group twice.
+
+**The package name is generated as `"{scope}-approvers"` and is reserved.** A `packages` key
+that collides with it fails the plan. Neither is silently renamed, because the name is how every
+output identifies a package.
+
+The package lives in the same catalog as its scope, and that is not configurable: approval rights
+over a scope belong to whoever owns that scope's delegation boundary. Making it configurable
+would let approval be delegated somewhere the access itself is not.
+
+### Removed inputs
+
+`manage_pim_for_groups_roles`, `acknowledge_m3_active_membership`, and `grant_approver_group`
+(on both `defaults` and a package) are gone. All three are still declared, so setting one fails
+with an explanation of what replaced it rather than a bare "unsupported argument".
+
+| Removed | Why | Replacement |
+|---|---|---|
+| `manage_pim_for_groups_roles` | There is no EligibleMember downgrade left to opt into | none needed |
+| `acknowledge_m3_active_membership` | The security regression it guarded no longer exists | none needed |
+| `grant_approver_group` | Meaning changed from per-package to per-scope | `approver_packages` |
 
 ---
 
@@ -268,14 +333,19 @@ without the second fails validation.
 | `excluded_resource_roles` | Per-group detail behind the above |
 | `catalogs` | Label → ID, display name, created-or-adopted, standing delegation |
 | `packages_by_catalog` | Which packages landed in which catalog. Security-relevant: a catalog is a delegation boundary |
-| `granted_groups_by_package` | What each package grants, after exclusions |
-| `packages` | Per package: source (`named` / `scope`), scope, catalog, declared vs attached vs excluded roles |
+| `granted_groups_by_package` | What each package grants. For `pim_for_groups`, both the plain group and the PIM-managed group it confers eligibility on |
+| `packages` | Per package: `kind` (`access` / `approver`), source, scope, catalog, declared vs attached vs excluded roles |
+| `approver_packages` | **Scope → the package granting peer-approval rights over it** |
 | `unpackaged_roles` | **Roles the contract vended that no package grants** — access nobody can request |
-| `gate_1_approvers` | Per package, the systemeier as named approvers |
-| `gate_2_approvers` | Repo 1's activation facts, republished, with `granted_by_packages` per role |
-| `peer_approval_status` | Per scope: which packages carry the approver group, and where the deadlock remains |
-| `verification_summary` | One line per package |
+| `gate_1_approvers` | Per package, both kinds, the systemeier as named approvers |
+| `gate_2_approvers` | Repo 1's activation facts, republished, with `attached_group` and `activation_group` per role |
+| `peer_approval_status` | Per scope: the approver package, and where the deadlock remains |
+| `verification_summary` | Grouped by kind, plus totals. **The output that confirms the split landed** |
 | `scopes`, `access_package_ids`, `assignment_policy_ids`, `effective_policies`, `contract_version` | |
+
+`packages`, `access_package_ids`, `assignment_policy_ids`, `effective_policies` and
+`gate_1_approvers` cover **both kinds**. Use the `kind` field rather than matching on the
+`-approvers` name suffix.
 
 `unpackaged_roles` is always empty on the default path, since the generated per-scope
 packages cover every role. Non-empty means repo 1 created a group, an RBAC binding and a
@@ -284,61 +354,100 @@ forgotten `role_keys` entry. Reported rather than assumed either way.
 
 ---
 
-## The EligibleMember gap
+## The approver package split
 
-`azuread_access_package_resource_package_association.access_type` is validated client-side
-to `Member` and `Owner` only. The Entra platform offers "Eligible Member" in the portal for
-PIM-managed groups; the sole barrier is a `StringInSlice` allowlist on the provider's
-schema field.
+Approval rights are a **separate package** from the access. Previously the approver group was a
+resource role on the access package, added when `grant_approver_group` was true, which welded
+two unrelated rights together:
 
-For `pim_for_groups` roles that matters enormously. Attaching one as `Member` makes the
-user an **active** member the moment the assignment lands — standing access to AWS instead
-of activating through PIM. It applies cleanly, looks correct, and nothing fails.
+- everyone who requested the access automatically became a peer approver
+- nobody could hold approval rights without also holding the access
 
-**Default behaviour: exclude, register, report.** Those roles get their *catalog*
-association created but not their *package* association, and appear in
-`excluded_resource_roles` and `manual_steps_required` with the portal path. Registration is
-access-type agnostic, so the manual step is one click on a resource that is already there.
+Now:
 
-The split is driven by the *value* of `access_type`, not by `jit_mechanism`. Repo 1 only
-returns `EligibleMember` for `pim_for_groups` today, but keying off the value means a future
-mechanism that also needs eligibility is caught automatically instead of slipping through as
-standing membership.
+```
+request access package    → systemeier approve → hold / activate the access
+request approver package  → systemeier approve → can approve other people
+```
 
-If a scope's roles are *all* excluded, its package ends up granting only its approver group.
-That is visible in `granted_groups_by_package`. With `grant_approver_group = false` it would
-grant nothing, and the plan fails rather than shipping a package that looks like working
-access.
+Two independent grants, two independent expiries, and the approver population is no longer
+forced to equal the requester population. In practice the approver package usually gets a much
+longer duration than the access it governs — approval authority is an ongoing responsibility
+rather than a task.
 
-**Verify licensing first.** Eligible group membership in access packages requires Entra ID
-Governance or Entra Suite, not P2 alone. If the platform rejects it, every workaround is a
-dead end including the manual portal step. `scripts/verify-entitlement-management.sh` is the
-probe.
+**Gate 1 on an approver package is always the systemeier, never the approver group.** This is
+load-bearing, not a convenience: if the group approved requests for its own membership, the
+approver population would be self-perpetuating with no authority outside it. The chain has to
+terminate somewhere, and the systemeier are the right place because they are named in the
+contract and are not themselves vended by this system.
+
+Both kinds share all the resource wiring — one `module "access_package"` call over a merged map
+keyed on package name, with a `kind` of `"access"` or `"approver"`. They differ only in which
+resource roles go in. `verification_summary` reports them separately, because it is the output
+people read to confirm the split actually landed.
+
+The catalog association for the approver group is keyed `"{catalog}|{scope}--approvers"`,
+unchanged from when it was a resource role on the access package, so it is reused rather than
+recreated.
+
+---
+
+## The EligibleMember gap (historical)
+
+**No longer applies under contract v2.** Kept here because the mechanism explains why
+`excluded_resource_roles` still exists and why it should now be empty.
+
+`azuread_access_package_resource_package_association.access_type` is validated client-side to
+`Member` and `Owner` only. The Entra platform offers "Eligible Member" in the portal for
+PIM-managed groups; the sole barrier is a `StringInSlice` allowlist on the provider's schema
+field.
+
+Under contract v1 that mattered enormously for `pim_for_groups` roles. Attaching one as `Member`
+would make the user an **active** member the moment the assignment landed — standing access to
+AWS instead of activating through PIM. It applied cleanly, looked correct, and nothing failed. So
+this module excluded those roles, registered their catalog resource anyway, and reported the
+portal step.
+
+**Contract v2 sidesteps it.** Repo 1 creates a plain group per `pim_for_groups` role and makes it
+an eligible member of the PIM-managed group, so the package attaches plain `Member` on a plain
+group and the user still activates through PIM. No provider limitation is involved any more.
+
+The exclusion machinery is still here, and still keyed off the *value* of `access_type` rather
+than `jit_mechanism`. It is now a guard rather than a workflow: if a contract ever asks for an
+access type the provider cannot set, it is caught and reported instead of applied wrongly.
+`excluded_resource_roles` should be empty, and an empty map is the useful signal — it is what you
+read to confirm nothing is being left out.
+
+**Licensing is worth re-testing.** Eligible group membership *in access packages* is the feature
+documented as requiring Entra ID Governance or Entra Suite. This design no longer uses it: it uses
+plain `Member` plus PIM for Groups. That **may** make it work on a P2-only tenant where the
+previous design could not. Treat that as a hypothesis to test with
+`scripts/verify-entitlement-management.sh`, not as a claim — nobody here has confirmed it.
 
 ---
 
 ## The expiry ceiling
 
-If a package assignment outlives the group's eligible-assignment expiry, PIM expires the
-eligibility while Entitlement Management still lists the user as assigned. They lose access
-without losing the assignment, nothing errors, and their own MyAccess page contradicts what
-they can do.
+If a package assignment outlives the PIM-managed group's eligible-assignment expiry, PIM expires
+the eligibility while Entitlement Management still lists the user as assigned. Under contract v2
+the user keeps membership of the plain carrier group and silently loses the ability to activate.
+Nothing errors, and their own MyAccess page contradicts what they can do.
 
-Repo 1 emits the ceiling as `max_assignment_days`, a number, so **nothing here parses
-ISO-8601**. Enforced per package as a plan-time precondition: `assignment_duration_days`
-must be at or below the minimum non-null `max_assignment_days` across **the roles that
-package grants**. The error names the role that set the binding ceiling, because the ceiling
-comes from one role's PIM policy and the operator needs to know which.
+Repo 1 emits the ceiling as `max_assignment_days`, a number, so **nothing here parses ISO-8601**.
+It comes from the **PIM-managed** group's `active_assignment_expire_after`, not from the plain
+group the package attaches — the plain group has no PIM policy of its own.
+
+Enforced per package as a plan-time precondition: `assignment_duration_days` must be at or below
+the minimum non-null `max_assignment_days` across **the roles that package grants**. The error
+names the role that set the binding ceiling, because the ceiling comes from one role's PIM policy
+and the operator needs to know which.
 
 Per package, not per scope, and that is a concrete benefit of named packages: an engineers
 package holding only reader and contributor is not constrained by an owner role it does not
 grant. On the per-scope path every package in a scope inherited the shortest ceiling in it.
 
-The ceiling is computed across every role the package **declares**, including those excluded
-by the EligibleMember gap. Those are expected to be added by hand in the portal, and once
-they are, their expiry constrains the package too. Using only the attached roles would let a
-too-long duration pass the plan and then start silently dropping access after the manual
-step.
+Approver packages have no ceiling. The approver group is a plain group with no PIM policy, so
+there is no eligibility expiry for the assignment to drift against.
 
 ---
 
@@ -350,12 +459,17 @@ something subtly wrong in the portal.
 
 | Precondition | Catches |
 |---|---|
-| `validate_configuration` | Unknown catalog label or scope key in the inputs; a scope naming a catalog missing from `contract.catalogs` |
+| `validate_configuration` | Unknown catalog label, unknown `package_overrides` key, `approver_packages` naming a scope with no approver group, a scope naming a catalog missing from `contract.catalogs`, a catalog label containing `\|` |
+| `validate_packages` | Unknown role key; a `packages` name colliding with a generated approver package name; a package spanning scopes; an unknown catalog on a package; a package granting nothing |
 | `validate_gate_1_approvers` | A scope with no systemeier, whose requests time out forever |
-| `validate_packages_grant_something` | A package with no resource roles — looks like access, grants none |
 | `validate_assignment_expiry_ceiling` | The expiry drift above |
 | `validate_no_duplicate_catalog_resources` | Two scopes sharing an approver group inside one catalog |
-| `validate_peer_approval_viability` | Peer approval switched off while a lone systemeier deadlocks |
+| `validate_peer_approval_viability` | An approver package disabled on a scope with a lone systemeier |
+
+`validate_packages_grant_something` is folded into `validate_packages` and stays **strict**.
+Under contract v2 nothing is excluded for provider reasons, so an all-`pim_for_groups` scope's
+package grants real memberships rather than nothing — relaxing the check would only hide a
+genuinely empty package.
 
 ### Why the association keys are what they are
 
@@ -386,24 +500,34 @@ provider reports it at apply, partway through, with resources already created.
 
 ---
 
-## Peer approval
+## Peer approval and the self-approval deadlock
 
-`grant_approver_group` attaches the scope's approver group to a package as an extra resource
-role. It defaults to `true` via `defaults`, and can be set **per package** — which is what
-makes the junior/senior split a configuration choice rather than a code change.
+Repo 1 seeds each approver group with its `systemeier`, so dual-approval roles work on the first
+apply. But PIM blocks self-approval, so a group with exactly one member cannot approve that
+member's own request — the request times out after 24 hours, a timeout nobody can configure.
 
-Repo 1 seeds each approver group with its `systemeier`, so dual-approval roles work on the
-first apply. But PIM blocks self-approval, so a group with exactly one member cannot approve
-that member's own request — the request times out after 24 hours, a timeout nobody can
-configure. Attaching the approver group makes everyone in the scope a peer approver.
+The **approver package** is what resolves that: it lets additional people be granted approval
+rights without also being granted the access. So the viability test is whether the scope has an
+approver package, not whether some access package happens to attach the group.
 
-The cost is that any member can approve an `Owner` elevation. Named packages are the fix, and
-it is available now rather than "future": two packages over one scope where only the senior
-tier sets `grant_approver_group`. Juniors request and activate; they never appear as an
-approver. `peer_approval_status.*.granted_by_packages` names the tiers that carry it.
+`peer_approval_status` reports it per scope:
 
-If **no** package in a scope attaches the group and that scope has fewer than two systemeier,
-the plan fails — that leaves the deadlock in place with nothing to resolve it.
+| Field | Meaning |
+|---|---|
+| `has_approver_group` | the contract gave this scope an approver group |
+| `approver_package` | the single package that grants it, or `null` if opted out |
+| `viable` | an approver package exists, so peers can be added |
+| `deadlock_risk` | fewer than two systemeier **and** no approver package |
+
+An approver package is created for every scope with an approver group by default, so
+`deadlock_risk` can only become true if one was explicitly disabled with
+`approver_packages = { "<scope>" = { enabled = false } }`. That combination fails the plan rather
+than shipping a scope whose dual-approval roles nobody can activate.
+
+Note what the split changed here. Previously the fix was "attach the group to an access package",
+which meant granting the access to get the approval right. Now the two are independent, so the
+junior/senior distinction is purely about **access tiers**, and whether someone can approve is a
+separate grant that either tier's holders may or may not have.
 
 ---
 
@@ -432,7 +556,6 @@ module "access_packages" {
   defaults = {
     assignment_duration_days = 14
     approval_timeout_days    = 7
-    grant_approver_group     = true
   }
 
   # Optional. Omit for one package per scope with every role in it.
@@ -445,7 +568,16 @@ module "access_packages" {
       display_name             = "Prod Admin Access"
       role_keys                = ["prod--reader", "prod--contributor", "prod--owner"]
       assignment_duration_days = 7
-      grant_approver_group     = true
+    }
+  }
+
+  # Optional. One approver package per scope with an approver group is created anyway; this
+  # only deviates from the defaults. Longer than the access it governs, because approval
+  # authority is an ongoing responsibility rather than a task.
+  approver_packages = {
+    "prod" = {
+      display_name             = "Prod Approver Rights"
+      assignment_duration_days = 90
     }
   }
 

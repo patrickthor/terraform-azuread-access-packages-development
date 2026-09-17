@@ -128,16 +128,14 @@ packages = {
   "prod-admins"    = {
     role_keys                = ["prod--reader", "prod--contributor", "prod--owner"]
     assignment_duration_days = 7
-    grant_approver_group     = true   # the senior tier approves peers
   }
 }
 ```
 
 Three things follow, and they are the reason the feature is worth having:
 
-- The **junior/senior split** becomes configuration. Only the tier with
-  `grant_approver_group` carries peer-approval rights; juniors request and activate but never
-  appear as an approver.
+- The **junior/senior split** becomes configuration: two access tiers over the same groups,
+  differing only in which roles they include.
 - **Expiry ceilings are per package.** A package is only capped by the roles it actually
   grants, so an engineers tier is not limited by an owner role it does not include.
 - A tier can have **its own catalog**, giving a privileged package its own delegation
@@ -258,47 +256,38 @@ Two options worth knowing:
 
 Real limitations, deliberately visible rather than papered over.
 
-### `EligibleMember` is not in the `azuread` provider
+### `EligibleMember` — solved, and how
 
 `azuread_access_package_resource_package_association.access_type` is validated client-side to
 `Member` and `Owner` only. The Entra platform offers "Eligible Member" in the portal for
-PIM-managed groups; the sole barrier is a `StringInSlice` allowlist on the provider's schema
-field.
+PIM-managed groups; the sole barrier is a `StringInSlice` allowlist on the provider's schema.
 
-For `pim_for_groups` roles that matters enormously. Attaching one as `Member` makes the user an
-**active** member the moment the assignment lands — standing access to AWS instead of activating
-through PIM. It applies cleanly, looks correct, and nothing fails.
+That used to be the biggest gap in this system. For `pim_for_groups` roles, attaching the group as
+`Member` makes the user an **active** member the moment the assignment lands — standing access to
+AWS instead of activating through PIM. It applies cleanly, looks correct, and nothing fails. So
+those roles were excluded from Terraform and finished by hand in the portal.
 
-**Default behaviour: exclude, register, report.** Those roles get their *catalog* association
-created but not their *package* association, and appear in `excluded_resource_roles` and
-`manual_steps_required` with the portal path. The manual step is one click on a resource that is
-already registered.
+**Contract v2 removes the need for it entirely.** Repo 1 now creates a plain, non-PIM group per
+`pim_for_groups` role and makes it an eligible member of the PIM-managed group. The access package
+attaches plain `Member` on the plain group — fully supported — and the user still activates through
+PIM to reach the real access.
 
-In order of what to pursue:
+So `excluded_resource_roles` should now be **empty**. The output is kept rather than deleted: it
+still covers anything else the provider cannot express, and an empty list is the signal that
+nothing is being left out silently.
 
-1. **Verify licensing first** — see below. If the platform rejects eligible roles, every
-   workaround is a dead end including the portal step.
-2. Exclude, register, report. This is what the code does.
-3. **A PR to `hashicorp/terraform-provider-azuread`** adding `"EligibleMember"` to the allowlist
-   is small and well-motivated. Worth opening regardless.
-4. **Microsoft's `msgraph` provider** (public preview) can POST the role scope directly. Treat
-   as a spike — nobody here has tested that specific POST. If adopted, it goes behind an explicit
-   opt-in and never becomes a required provider.
+`manage_pim_for_groups_roles` and `acknowledge_m3_active_membership` are gone. Setting either
+fails the plan with an explanation, because there is no longer a downgrade to acknowledge.
 
-Full IaC coverage by downgrading to `Member` stays available behind **two** flags,
-`manage_pim_for_groups_roles` and `acknowledge_m3_active_membership`, because the failure mode
-shows up in neither plan nor portal.
+### Licensing — worth re-testing
 
-### Licensing — verify before building further
+Eligible group membership **in access packages** is the feature documented as requiring Entra ID
+Governance or Entra Suite, not P2 alone. This design no longer uses it: it uses plain `Member` plus
+PIM for Groups.
 
-Eligible group membership in access packages requires **Entra ID Governance or Entra Suite**, not
-P2 alone. `scripts/verify-entitlement-management.sh` is the probe, and the answer changes what is
-worth building:
-
-- Catalogs work but eligible resource roles are rejected at the platform level → the provider
-  allowlist is not the blocker, and neither the `msgraph` spike nor the portal workaround helps.
-- Eligible roles do work in the portal → the allowlist is the only barrier, and the `msgraph`
-  path is worth the spike.
+That **may** make it work on a P2-only tenant where the previous design could not. Treat it as a
+hypothesis to test with `scripts/verify-entitlement-management.sh`, not a claim — nobody here has
+confirmed it, and the `Verified in this tenant` table below is where the answer belongs.
 
 ### `entra_role` activation is outside Terraform entirely
 
@@ -335,9 +324,37 @@ Repo 1 seeds each approver group with its scope's `systemeier`, so dual-approval
 the first apply. But PIM blocks self-approval, so a group with exactly one member cannot approve
 that member's own request — the request times out after 24 hours, a timeout nobody can configure.
 
-Fixed by `grant_approver_group = true` (the default): the package grants the approver group too,
-so everyone in the scope is a peer approver. `peer_approval_status` reports where that is viable
-and where it is not.
+Fixed by the **approver package**, which is created for every scope with an approver group by
+default. It lets additional people be granted approval rights *without* also being granted the
+access, which is the whole point of separating them. `peer_approval_status` reports where that is
+viable and where it is not, and disabling an approver package on a scope with a lone systemeier
+fails the plan.
+
+---
+
+## Approval rights are a separate package
+
+Approval used to be a resource role on the access package: request the access, become an approver.
+That welded two unrelated rights together — and meant nobody could approve without also holding
+the access.
+
+```
+request access package    → systemeier approve → hold / activate the access
+request approver package  → systemeier approve → can approve other people
+```
+
+Two independent grants with two independent expiries. One approver package per scope, granting only
+the approver group, created automatically and configured via `approver_packages`. In practice it
+gets a much longer duration than the access it governs, because approval authority is an ongoing
+responsibility rather than a task.
+
+**Gate 1 on an approver package is always the systemeier, never the approver group.** If the group
+approved requests for its own membership, the approver population would be self-perpetuating with
+no authority outside it. The chain terminates at the systemeier, who are named in the contract and
+are not themselves vended.
+
+`terraform output verification_summary` groups packages by kind — that is what confirms the split
+landed, and any `access` entry showing an approver group means it did not.
 
 ---
 
@@ -348,11 +365,12 @@ Blank rows are honest unverified claims. A filled-in row that nobody tested is n
 | Question | Result | Date |
 |---|---|---|
 | Can a catalog be created on P2 alone? | | |
-| Does the platform offer "Eligible Member" as a resource role? | | |
+| Does the v2 carrier-group design work on P2 alone, without Governance? | | |
 | Does `terraform plan` report no changes after the first apply? | | |
-| Does a `pim_for_groups` assignment produce eligible or active membership? | | |
-| Can two members of one scope approve each other? | | |
+| Does a `pim_for_groups` assignment leave the user **eligible** rather than active on the PIM group? | | |
+| Can two holders of an approver package approve each other's activation? | | |
 | Does a lone systemeier fail to activate their own dual-approval role? | | |
+| Can someone hold the approver package without holding the access package? | | |
 | How long does gate 2 propagation take? | | |
 
 ---

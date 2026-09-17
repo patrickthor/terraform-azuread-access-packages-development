@@ -86,13 +86,17 @@ variable "catalogs" {
 }
 
 variable "defaults" {
-  description = "Request-side settings applied to every package unless overridden per scope."
+  description = "Request-side settings applied to every package unless overridden per package."
   type = object({
     assignment_duration_days = optional(number, 14)
     requestor_scope_type     = optional(string, "AllExistingDirectoryMemberUsers")
     require_justification    = optional(bool, true)
     approval_timeout_days    = optional(number, 7)
-    grant_approver_group     = optional(bool, true)
+
+    # Declared with NO default, and passed through, so that a caller who still sets it gets
+    # the module's explanation of what replaced it rather than a bare "unsupported argument".
+    # A default here would trip that rejection on every apply.
+    grant_approver_group = optional(bool)
   })
   default = {}
 }
@@ -120,7 +124,9 @@ variable "packages" {
     question_text            = optional(string)
     hidden                   = optional(bool)
     requests_accepted        = optional(bool)
-    grant_approver_group     = optional(bool)
+
+    # Passed through only so the module can reject it by name. See var.approver_packages.
+    grant_approver_group = optional(bool)
   }))
   default = {}
 }
@@ -141,18 +147,30 @@ variable "package_overrides" {
   default = {}
 }
 
-variable "manage_pim_for_groups_roles" {
+variable "approver_packages" {
   description = <<-EOT
-    Attach roles whose contract access_type is "EligibleMember" anyway, downgraded to
-    "Member". Default false. Setting this true converts just-in-time eligibility into
-    standing active membership and also requires acknowledge_m3_active_membership = true.
-  EOT
-  type        = bool
-  default     = false
-}
+    Peer-approval rights as their own access package, keyed on SCOPE key.
 
-variable "acknowledge_m3_active_membership" {
-  description = "Explicit acknowledgement of the security regression that manage_pim_for_groups_roles causes."
-  type        = bool
-  default     = false
+    One is created by default for every scope whose contract entry has an approver group, so
+    this is only needed to deviate — or to opt a scope out with `enabled = false`.
+
+    The approver group is no longer a resource role on the access package. Holding the access
+    and holding approval rights are separate grants with separate expiries. Field reference in
+    modules/access-packages/README.md.
+  EOT
+  type = map(object({
+    enabled = optional(bool, true)
+
+    display_name = optional(string)
+    description  = optional(string)
+
+    assignment_duration_days = optional(number)
+    requestor_scope_type     = optional(string)
+    require_justification    = optional(bool)
+    approval_timeout_days    = optional(number)
+    question_text            = optional(string)
+    hidden                   = optional(bool)
+    requests_accepted        = optional(bool)
+  }))
+  default = {}
 }

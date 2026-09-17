@@ -16,7 +16,7 @@
 
 locals {
   contract = {
-    contract_version = 1
+    contract_version = 2
 
     roles = {
       # ---- azure_pim. Membership is active; the user activates the ROLE in PIM for
@@ -58,26 +58,40 @@ locals {
         permanent_access = false, target = "Network Contributor", max_assignment_days = null
       }
 
-      # ---- pim_for_groups. Needs EligibleMember, which the provider validates away.
-      # max_assignment_days = 30 comes from repo 1's active_assignment_expire_after of
-      # P30D, and caps this package's assignment duration.
+      # ---- pim_for_groups. CONTRACT V2: two groups per role.
+      #
+      # group_object_id is a PLAIN, non-PIM-managed group that repo 1 has made an eligible
+      # member of the PIM-managed group named in pim_group_name. The access package attaches
+      # plain Member on the plain group — which the provider fully supports — and the user
+      # still activates through PIM to reach the real access.
+      #
+      # That is what removed the EligibleMember gap: under v1 these roles required an access
+      # type the azuread provider cannot set, so they were excluded and left to the portal.
+      #
+      # max_assignment_days still comes from the PIM-MANAGED group's
+      # active_assignment_expire_after, not from the plain group. The package assignment
+      # governs membership of the plain group; if that outlives the PIM eligibility the user
+      # keeps the membership and silently loses the ability to activate.
       "jaws--admin" = {
         scope            = "jaws", role = "admin"
-        group_name       = "aws-jaws-admin", group_object_id = "00000000-0000-0000-0000-000000000007"
-        access_type      = "EligibleMember", jit_mechanism = "pim_for_groups"
+        group_name       = "aws-jaws-admin-eligible", group_object_id = "00000000-0000-0000-0000-000000000007"
+        access_type      = "Member", jit_mechanism = "pim_for_groups"
         permanent_access = false, target = "AdministratorAccess", max_assignment_days = 30
+        pim_group_name   = "aws-jaws-admin", pim_group_object_id = "00000000-0000-0000-0000-0000000000a7"
       }
       "jaws--readonly" = {
         scope            = "jaws", role = "readonly"
-        group_name       = "aws-jaws-readonly", group_object_id = "00000000-0000-0000-0000-000000000008"
-        access_type      = "EligibleMember", jit_mechanism = "pim_for_groups"
+        group_name       = "aws-jaws-readonly-eligible", group_object_id = "00000000-0000-0000-0000-000000000008"
+        access_type      = "Member", jit_mechanism = "pim_for_groups"
         permanent_access = false, target = "ReadOnlyAccess", max_assignment_days = 30
+        pim_group_name   = "aws-jaws-readonly", pim_group_object_id = "00000000-0000-0000-0000-0000000000a8"
       }
       "jaws--billing" = {
         scope            = "jaws", role = "billing"
-        group_name       = "aws-jaws-billing", group_object_id = "00000000-0000-0000-0000-000000000009"
-        access_type      = "EligibleMember", jit_mechanism = "pim_for_groups"
-        permanent_access = false, target = "Billing", max_assignment_days = 30
+        group_name       = "aws-jaws-billing-eligible", group_object_id = "00000000-0000-0000-0000-000000000009"
+        access_type      = "Member", jit_mechanism = "pim_for_groups"
+        permanent_access = false, target = "Billing", max_assignment_days = 15
+        pim_group_name   = "aws-jaws-billing", pim_group_object_id = "00000000-0000-0000-0000-0000000000a9"
       }
 
       # ---- entra_role. Membership is active; the DIRECTORY ROLE is activated in PIM,
@@ -106,7 +120,8 @@ locals {
         approver_group_object_id = "00000000-0000-0000-0000-0000000000c1"
         role_keys                = ["tommer--contriband", "tommer--master", "tommer--readingbooks"]
       }
-      # One systemeier, so without grant_approver_group its dual roles deadlock.
+      # One systemeier. Its approver package is what lets a second person be given approval
+      # rights without also being given the access.
       "morkanaught" = {
         catalog                  = "platform", cloud = "azure"
         scope_id                 = "/subscriptions/22222222-2222-2222-2222-222222222222"
@@ -166,11 +181,16 @@ module "access_packages" {
     assignment_duration_days = 14
     approval_timeout_days    = 7
     require_justification    = true
-
-    # Attaches each scope's approver group to its package, making peer approval real and
-    # resolving the single-systemeier deadlock on morkanaught and jaws.
-    grant_approver_group = true
   }
+
+  # var.approver_packages is deliberately NOT set: one approver package is created for every
+  # scope that has an approver group, using the defaults above. That is tommer, morkanaught and
+  # jaws — three extra packages granting only the approver group, on top of the four access
+  # packages.
+  #
+  # The approver group is no longer a resource role on any access package. Requesting access to
+  # a scope no longer makes you an approver for it, and being an approver no longer requires
+  # holding the access.
 
   # var.packages is deliberately NOT set here: this example verifies the DEFAULT path —
   # one package per scope, every role in it. See examples/named-packages for the
@@ -184,7 +204,8 @@ module "access_packages" {
     "tenant" = { assignment_duration_days = 7 }
   }
 
-  # The three aws-jaws-* roles need EligibleMember, which the provider cannot express, so
-  # they are left out and reported rather than silently downgraded to standing membership.
-  manage_pim_for_groups_roles = false
+  # manage_pim_for_groups_roles / acknowledge_m3_active_membership are gone. Under contract v2
+  # the aws-jaws-* roles attach plain Member on a plain eligibility-carrier group, so there is
+  # no EligibleMember downgrade left to opt into. Setting either flag now fails the plan with an
+  # explanation rather than being quietly ignored.
 }

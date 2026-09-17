@@ -46,8 +46,26 @@ output "gate_2_approvers" {
   value       = module.access_packages.gate_2_approvers
 }
 
+output "packages" {
+  description = "Every package with its kind (access | approver), scope, catalog and roles."
+  value       = module.access_packages.packages
+}
+
+output "approver_packages" {
+  description = "Scope → the package granting peer-approval rights over it. Gate 1 is the systemeier, never the approver group."
+  value       = module.access_packages.approver_packages
+}
+
+output "unpackaged_roles" {
+  description = "Roles the contract vended that no access package grants — access nobody can request."
+  value       = module.access_packages.unpackaged_roles
+}
+
 output "excluded_resource_roles" {
-  description = "Groups left out of Terraform because the provider cannot express the access type they require."
+  description = <<-EOT
+    Roles the provider cannot attach with the access type they require. Expected to be EMPTY
+    under contract v2 — kept because an empty list is the signal that nothing is being left out.
+  EOT
   value       = module.access_packages.excluded_resource_roles
 }
 

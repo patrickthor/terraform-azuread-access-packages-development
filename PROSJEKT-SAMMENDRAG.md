@@ -3,7 +3,7 @@
 **Start here** after a break or when opening a new session. Written to give full context
 without reading the code first.
 
-Last updated: 10 September 2026
+Last updated: 12 September 2026
 Status: **restructured onto the two-module contract. Not yet applied against Azure.**
 
 ---
@@ -137,6 +137,49 @@ form worked and was one repo-1 refactor away from `The "for_each" value depends 
 attributes that cannot be determined until apply` — surfacing in this module for a change
 made in the other repo.
 
+**Approver packages split out.** Peer-approval rights are now their own package, one per scope,
+granting only the approver group. Previously the approver group was a resource role on the access
+package, which welded two unrelated rights together: everyone who requested the access became a
+peer approver, and nobody could approve without also holding the access.
+
+    request access package    -> systemeier approve -> hold / activate the access
+    request approver package  -> systemeier approve -> can approve other people
+
+Two independent grants, two independent expiries. Gate 1 on the approver package is the
+systemeier and never the approver group itself — approvers appointing approvers is an escalation
+loop with no terminating authority, and the systemeier are the natural end of the chain because
+they are named in the contract and are not themselves vended.
+
+`grant_approver_group` is REJECTED rather than reinterpreted. It used to mean "attach the group
+to this package"; the decision is now "does this scope get an approver package", which is a
+different question with a different answer shape. The error names `approver_packages`.
+
+Both kinds share one module call over a merged map keyed on package name, with a `kind` field.
+The split did not fork the resource wiring.
+
+**Contract v2: no more EligibleMember exclusions.** Repo 1 now creates a plain, non-PIM group per
+`pim_for_groups` role and makes it an eligible member of the PIM-managed group. The access package
+attaches plain `Member` on the plain group, which the provider fully supports, and the user still
+activates through PIM.
+
+So the biggest gap in the system is gone. `excluded_resource_roles` and `manual_steps_required`
+come back empty for those roles and were deliberately NOT deleted — they still cover anything else
+the provider cannot express, and an empty list is the useful signal.
+
+`manage_pim_for_groups_roles` and `acknowledge_m3_active_membership` are rejected if set: there is
+no downgrade left to acknowledge. Only `contract_version == 2` is accepted, with no branch for v1,
+because supporting both would mean carrying the dead exclusion path plus a silent behaviour
+difference between two callers on the same module version.
+
+The expiry ceiling still derives from the PIM-managed group's `active_assignment_expire_after`,
+not from the plain group. The package assignment governs membership of the plain group; if that
+outlives the PIM eligibility the user keeps the membership and silently loses the ability to
+activate.
+
+These two changes interact: once the approver group moves out, an all-`pim_for_groups` scope's
+access package would have been empty under v1. Under v2 it grants real memberships, so
+`validate_packages_grant_something` stayed strict rather than being relaxed.
+
 **Named access packages.** `var.packages` builds several packages over the same groups, so
 one scope can serve more than one audience — "engineers get reader and contributor, admins
 also get owner". A package grants everything in it atomically, so a scope-wide package could
@@ -187,7 +230,10 @@ reproducible.
 | D9 | Fields this repo cannot honour are rejected, not accepted and dropped |
 | D10 | The module takes a typed object; where the contract comes from is the root's decision |
 | D11 | A package may not span scopes — rejected at plan time, not resolved |
-| D12 | Catalog associations keyed on `(catalog, role)`, so a shared role across catalogs gets one association each |
+| D12 | Catalog associations keyed on `(catalog, group)`, so a shared group across catalogs gets one association each |
+| D13 | Peer-approval rights are their own package, one per scope, not a resource role on the access package |
+| D14 | Gate 1 on an approver package is the systemeier, never the approver group — the escalation chain must terminate |
+| D15 | Only contract v2 is accepted. No branch for v1, so the EligibleMember exclusion path is gone rather than dormant |
 
 ### Why cross-scope packages are rejected rather than resolved
 
@@ -228,10 +274,11 @@ into a plan failure.
 
 | # | Risk | Status |
 |---|---|---|
-| R1 | `EligibleMember` is not in the provider's allowlist, so `pim_for_groups` roles are excluded from IaC | Mitigated by exclude-register-report and visible in `excluded_resource_roles`. **Not eliminated** |
-| R2 | Eligible group membership may need Governance licensing, not just P2 | **Unverified.** Gates everything, including whether the portal workaround helps |
+| R1 | `EligibleMember` is not in the provider's allowlist | **RESOLVED** by contract v2: a plain carrier group is attached instead, so the provider limitation no longer applies |
+| R2 | Entitlement Management licensing on P2 alone | **Unverified, and now more hopeful.** The v2 design does not use "eligible group membership in access packages", which is the feature documented as needing Governance. It may therefore work on P2. Hypothesis, not a claim |
 | R3 | An `entra_role` scope hands out `Groups Administrator`, which can rewrite the PIM policies of every group repo 1 creates. Gate 1 is the only gate Terraform enforces | Mitigated by the shortest duration, its own catalog, and a named manual step |
-| R4 | A scope whose roles are all excluded grants only its approver group | Visible in `granted_groups_by_package`; the portal steps are listed |
+| R4 | A scope whose roles are all excluded would grant nothing once the approver group moved out | **RESOLVED** by v2 landing together with the split: nothing is excluded, so the package grants real memberships |
+| R12 | An approver package holder can approve activation for access they do not hold | Accepted deliberately. That is the point of separating the rights, and gate 1 on the approver package is the systemeier |
 | R5 | Renaming a scope or role key in repo 1 is destructive and invalidates every object ID in the contract | Treat the key set as append-only across both repos |
 | R6 | `CallerNotResourceOwner` if repo 2 runs as a different identity from repo 1 | Mitigated by using one identity for both modules |
 | R7 | Assignment expiry outliving the PIM eligibility expiry causes silent access loss | Precondition per package, from repo 1's `max_assignment_days` |

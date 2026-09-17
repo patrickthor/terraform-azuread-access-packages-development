@@ -37,18 +37,24 @@ throwaway catalog names, since the group object IDs are placeholders too.
 | `tommer` | platform | readingbooks, contriband, master | `azure_pim` | yes | 2 |
 | `morkanaught` | platform | reader, blob-leser, nettverksdrift | `azure_pim` | yes | 1 |
 | `jaws` | platform | admin, readonly, billing | `pim_for_groups` | yes | 1 |
+
+Plus three approver packages: `tommer-approvers`, `morkanaught-approvers`, `jaws-approvers`.
+Generated automatically for the scopes that have an approver group; `tenant` has none.
 | `tenant` | **privileged** | groupsadmin, directoryreader | `entra_role` | no | 1 |
 
 ## Expected outcome
 
-Four things in the output are worth understanding rather than glossing over.
+Five things in the output are worth understanding rather than glossing over.
 
-**`jaws` attaches 0 of its 3 roles.** They need `EligibleMember`, which the provider
-validates away, so they are excluded and reported in `excluded_resource_roles` instead of
-being silently downgraded to standing membership. Its package therefore grants **only its
-approver group** — check `granted_groups_by_package`. That is the honest consequence on an
-all-`pim_for_groups` scope, and `manual_steps_required` names the three portal steps that
-complete it.
+**Seven packages, not four.** Four access packages (one per scope) plus three approver packages —
+tommer, morkanaught and jaws, the scopes that have an approver group. The approver group is no
+longer a resource role on any access package: requesting access to a scope does not make you an
+approver for it, and being an approver does not require holding the access.
+
+**`jaws` attaches all 3 of its roles.** Under contract v2 they attach plain `Member` on plain
+eligibility-carrier groups, so nothing is excluded and `excluded_resource_roles` comes back empty.
+`granted_groups_by_package` shows both groups per role: the carrier group it grants, and the
+PIM-managed group that membership makes you eligible for.
 
 **`tenant` sits in its own catalog.** It hands out `Groups Administrator`, which can manage
 membership in every non-role-assignable group in the tenant — *including* all the groups
@@ -56,9 +62,10 @@ repo 1 creates — and rewrite their PIM policies. Terraform can set no activati
 directory roles, so gate 1 is the only gate it enforces. A separate catalog keeps it visible
 in a listing, and a 7-day duration is the other mitigation available in code.
 
-**`jaws`'s ceiling is 15 days, not 30.** `jaws--billing` carries
-`max_assignment_days = 15` while the other two carry 30, and the ceiling is the minimum
-across the scope. `verification_summary.jaws.expiry_ceiling_days` shows it.
+**`jaws`'s ceiling is 15 days, not 30.** `jaws--billing` carries `max_assignment_days = 15` while
+the other two carry 30, and the ceiling is the minimum across the package. It comes from the
+PIM-MANAGED group's expiry, not from the carrier group the package attaches.
+`verification_summary.access.jaws.expiry_ceiling_days` shows it.
 
 **`gate_2_approvers` shows `terraform_governs_activation = false`** for both `tenant` roles.
 That does not mean those roles are open: active Privileged Role Administrator and Global
@@ -71,9 +78,13 @@ Each should **fail the plan**, which is the behaviour worth verifying:
 
 | Change | Expected failure |
 |---|---|
-| `grant_approver_group = false` | `jaws` would grant nothing — `validate_packages_grant_something` |
+| `approver_packages = { "jaws" = { enabled = false } }` | jaws has one systemeier and would deadlock — `validate_peer_approval_viability` |
+| `approver_packages = { "tenant" = {} }` | tenant has no approver group — `validate_configuration` |
 | `assignment_duration_days = 20` | `jaws` breaches its 15-day ceiling, error names `jaws--billing` — `validate_assignment_expiry_ceiling` |
-| `manage_pim_for_groups_roles = true` alone | Requires the acknowledgement — variable validation |
+| `manage_pim_for_groups_roles = true` | Removed under contract v2 — variable validation names why |
+| `grant_approver_group = true` in `defaults` | Removed; names `approver_packages` as the replacement |
+| `contract_version = 1` in the fixture | Only v2 is accepted, with no branch — variable validation |
+| Add a package named `"jaws-approvers"` | Collides with the generated approver package name — `validate_packages` |
 | Add `"platfrom" = {}` to `catalogs` | Unknown catalog label — `validate_configuration` |
 | Rename `"tenant"` in `package_overrides` to `"tenat"` | Unknown package — `validate_configuration` |
 | Empty a scope's `systemeier` list | Gate 1 unsatisfiable — `validate_gate_1_approvers` |

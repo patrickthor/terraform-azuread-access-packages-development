@@ -22,7 +22,7 @@
 # repo 1 to be applied first. The plan cannot resolve without repo 1's state, which
 # catches the empty case, but a *stale* state still plans cleanly. For pim_for_groups
 # roles that matters — it is the act of writing the PIM policy that onboards a group to
-# PIM for Groups, and until then the platform does not offer EligibleMember at all.
+# PIM for Groups, and until then the eligibility carrier group confers eligibility on nothing.
 # ==============================================================================
 
 data "terraform_remote_state" "vending" {
@@ -51,7 +51,5 @@ module "access_packages" {
   defaults          = var.defaults
   packages          = var.packages
   package_overrides = var.package_overrides
-
-  manage_pim_for_groups_roles      = var.manage_pim_for_groups_roles
-  acknowledge_m3_active_membership = var.acknowledge_m3_active_membership
+  approver_packages = var.approver_packages
 }

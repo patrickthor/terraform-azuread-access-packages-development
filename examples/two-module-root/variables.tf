@@ -41,13 +41,16 @@ variable "catalogs" {
 }
 
 variable "defaults" {
-  description = "Request-side settings applied to every package unless overridden per scope."
+  description = "Request-side settings applied to every package unless overridden per package."
   type = object({
     assignment_duration_days = optional(number, 14)
     requestor_scope_type     = optional(string, "AllExistingDirectoryMemberUsers")
     require_justification    = optional(bool, true)
     approval_timeout_days    = optional(number, 7)
-    grant_approver_group     = optional(bool, true)
+
+    # No default: passed through only so the module can reject it by name if a caller still
+    # sets it. A default here would trip that rejection on every apply.
+    grant_approver_group = optional(bool)
   })
   default = {}
 }
@@ -69,6 +72,25 @@ variable "packages" {
     hidden                   = optional(bool)
     requests_accepted        = optional(bool)
     grant_approver_group     = optional(bool)
+  }))
+  default = {}
+}
+
+variable "approver_packages" {
+  description = "Peer-approval packages, keyed on scope. One is created per scope with an approver group by default."
+  type = map(object({
+    enabled = optional(bool, true)
+
+    display_name = optional(string)
+    description  = optional(string)
+
+    assignment_duration_days = optional(number)
+    requestor_scope_type     = optional(string)
+    require_justification    = optional(bool)
+    approval_timeout_days    = optional(number)
+    question_text            = optional(string)
+    hidden                   = optional(bool)
+    requests_accepted        = optional(bool)
   }))
   default = {}
 }

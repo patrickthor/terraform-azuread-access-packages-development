@@ -51,16 +51,19 @@ variable "resource_roles" {
     error_message = <<-EOT
       access_type must be "Member" or "Owner".
 
-      "EligibleMember" is rejected on purpose. The Entra platform supports it for
-      PIM-managed groups, but the azuread provider does not — the schema for
-      azuread_access_package_resource_package_association accepts only Member and
-      Owner. Passing EligibleMember would not fail: Terraform would silently fall
-      back to active membership, giving standing access instead of the
-      just-in-time access the model promises.
+      azuread_access_package_resource_package_association validates this field
+      client-side to those two values. "EligibleMember" exists in the Entra platform
+      for PIM-managed groups but not in the provider's schema, and passing it would
+      not fail cleanly: Terraform would fall back to active membership, giving
+      standing access instead of the just-in-time access the model promises.
 
-      Roles that need eligible membership (jit_mechanism = "pim_for_groups") are
-      excluded from Terraform by the calling module and listed in its
-      excluded_resource_roles output instead.
+      Under the current design nothing should ever ask for it. Just-in-time access
+      comes from attaching plain Member on a plain group that the vending module has
+      made an eligible member of the PIM-managed group — so the access package needs
+      no eligible access type at all, and the user still activates through PIM.
+
+      Seeing this means the caller passed an access type from an older contract
+      shape.
     EOT
   }
 
@@ -71,12 +74,9 @@ variable "resource_roles" {
       requestable but grants nothing, which is worse than not existing — it looks
       like working access in MyAccess and silently grants none.
 
-      The most likely cause when called from the access-packages module: every role
-      in this scope required "EligibleMember" and was excluded under blocker 2.1,
-      and grant_approver_group is false so no approver group was attached either.
-      The parent module has a precondition with the available remedies; if you are
-      seeing this message instead of that one, the scope has no grantable groups at
-      all.
+      The parent access-packages module has a precondition covering this with the
+      available remedies, so seeing this message instead means the leaf was called
+      directly with an empty map.
     EOT
   }
 }

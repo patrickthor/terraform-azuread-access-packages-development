@@ -24,6 +24,44 @@ Catalogs, access packages, their resource roles, and their assignment policies �
   from.
 - Parse ISO-8601. Repo 1 emits `max_assignment_days` as a number.
 
+## CURRENT STATE — read this before the numbered sections
+
+Two changes landed after the sections below were written. Where they conflict, these win.
+
+**A. Peer-approval rights are their own package.** The approver group is NOT a resource role on
+any access package. There is one approver package per scope with an approver group, granting only
+that group, named `"{scope}-approvers"` and configured through `var.approver_packages` (keyed on
+scope, `enabled = true` by default).
+
+    request access package    -> systemeier approve -> hold / activate the access
+    request approver package  -> systemeier approve -> can approve other people
+
+Gate 1 on an approver package is the **systemeier**, never the approver group: approvers
+appointing approvers is an escalation loop with no terminating authority. `grant_approver_group`
+is REJECTED with an error naming `approver_packages`, because its meaning changed from
+per-package to per-scope. Both kinds share one module call over a merged map keyed on package
+name, carrying a `kind` of `"access"` or `"approver"`.
+
+The generated approver name is reserved: a `var.packages` key colliding with it fails the plan
+rather than either being renamed.
+
+**B. Contract v2 — no more EligibleMember exclusions.** Repo 1 creates a plain, non-PIM group per
+`pim_for_groups` role and makes it an eligible member of the PIM-managed group. `access_type` is
+`Member` for every mechanism, `group_object_id` is the PLAIN group to attach, and
+`pim_group_name` / `pim_group_object_id` name the PIM-managed group behind it.
+
+Only `contract_version == 2` is accepted — no branch for v1. `manage_pim_for_groups_roles` and
+`acknowledge_m3_active_membership` are rejected if set: there is no downgrade left to
+acknowledge. `excluded_resource_roles` and `manual_steps_required` are KEPT and should come back
+empty; an empty list is the signal.
+
+The expiry ceiling still derives from the PIM-managed group's `active_assignment_expire_after`
+(`max_assignment_days`), not from the plain group. `validate_packages_grant_something` stays
+STRICT — with v2 an all-`pim_for_groups` package grants real memberships, so it is no longer at
+risk of being legitimately empty.
+
+---
+
 ## Changes to land for the two-module contract
 
 The draft is structurally right — one catalog, one package per scope, derivation from repo
@@ -217,24 +255,27 @@ module to run.
 | `catalogs` | Label → catalog ID, display name, created-or-adopted. |
 | `packages_by_catalog` | Which packages landed in which catalog. The catalog is a delegation boundary, so this is a security-relevant listing. |
 | `granted_groups_by_package` | What each package actually grants, after exclusions. |
-| `packages` | Per package: source (named/scope), scope, catalog, declared vs attached vs excluded roles. |
+| `packages` | Per package: `kind` (access/approver), source, scope, catalog, declared vs attached vs excluded roles. |
 | `unpackaged_roles` | Contract roles no package grants — access nobody can request. |
+| `approver_packages` | Scope -> the package granting peer-approval rights over it. |
 | `gate_1_approvers` | Per package, the systemeier acting as named approvers. |
 | `gate_2_approvers` | Repo 1's activation rules, republished verbatim. |
-| `peer_approval_status` | Where the single-systemeier deadlock is resolved and where it is not. |
-| `verification_summary` | One line per package, including that package's own expiry ceiling. |
+| `peer_approval_status` | Per scope: the approver package, and where the deadlock remains. |
+| `verification_summary` | Grouped BY KIND plus totals — the output that confirms the access/approver split landed. |
 
 ## Licensing — verify before building further
 
-Eligible group membership in access packages requires **Entra ID Governance or Entra
-Suite**, not P2 alone. `scripts/verify-entitlement-management.sh` is the probe. Record the
-answer in the README table, because it changes what is worth building:
+Eligible group membership **in access packages** is the feature documented as requiring
+**Entra ID Governance or Entra Suite**, not P2 alone.
 
-- If catalogs work but eligible resource roles are rejected at the platform level, the
-  provider allowlist is not the blocker and neither the `msgraph` spike nor the portal
-  workaround helps.
-- If eligible roles do work in the portal, the provider allowlist is the only barrier and
-  the `msgraph` path is worth the spike.
+RE-TEST THIS. The contract v2 design no longer uses that feature: it attaches plain `Member`
+on a plain group and lets PIM for Groups do the eligibility. So it MAY work on a P2-only
+tenant where the previous design could not. That is a hypothesis, not a claim — nobody has
+confirmed it. `scripts/verify-entitlement-management.sh` is the probe.
+
+The `msgraph` spike and the provider-allowlist PR were both workarounds for the v1 shape and
+are no longer on the critical path. A PR adding `EligibleMember` to the allowlist is still
+worth opening on its own merits, but nothing here depends on it.
 
 Leave the "Verified in this tenant" table in the README, and leave the rows blank until
 they are actually verified. A blank row is an honest unverified claim; a filled-in row that

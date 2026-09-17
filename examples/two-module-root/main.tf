@@ -14,7 +14,8 @@
 #     repo 1's outputs, so a single apply physically cannot get the order wrong. That
 #     matters concretely: for pim_for_groups roles it is the act of writing the PIM
 #     policy that onboards the group to PIM for Groups, and until then the platform does
-#     not offer EligibleMember as a resource role at all.
+#     not have onboarded the group to PIM for Groups, so the eligibility carrier group would
+#     confer eligibility on nothing.
 #   - One committed tfvars is the governance record. For an access system, the
 #     configuration IS the audit trail of who may reach what.
 #
@@ -46,9 +47,9 @@ locals {
   #
   # Deliberately minimal — two roles in one scope, one catalog — because this example is
   # about the wiring, not about coverage. examples/complete has the full-fidelity fixture
-  # with all three mechanisms, two catalogs and the EligibleMember exclusion.
+  # with all three mechanisms and two catalogs.
   access_vending_contract = {
-    contract_version = 1
+    contract_version = 2
 
     roles = {
       "sandbox--reader" = {
@@ -56,12 +57,16 @@ locals {
         group_name       = "azure-sandbox-reader", group_object_id = "00000000-0000-0000-0000-0000000000f1"
         access_type      = "Member", jit_mechanism = "azure_pim"
         permanent_access = true, target = "Reader", max_assignment_days = null
+        # azure_pim needs no carrier group: the user activates the ROLE in PIM for Azure
+        # Resources, not the membership.
+        pim_group_name = null, pim_group_object_id = null
       }
       "sandbox--contributor" = {
         scope            = "sandbox", role = "contributor"
         group_name       = "azure-sandbox-contributor", group_object_id = "00000000-0000-0000-0000-0000000000f2"
         access_type      = "Member", jit_mechanism = "azure_pim"
         permanent_access = false, target = "Contributor", max_assignment_days = null
+        pim_group_name   = null, pim_group_object_id = null
       }
     }
 
@@ -103,4 +108,5 @@ module "access_packages" {
   defaults          = var.defaults
   packages          = var.packages
   package_overrides = var.package_overrides
+  approver_packages = var.approver_packages
 }
