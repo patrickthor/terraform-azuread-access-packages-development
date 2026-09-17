@@ -52,4 +52,6 @@ module "access_packages" {
   packages          = var.packages
   package_overrides = var.package_overrides
   approver_packages = var.approver_packages
+
+  enable_access_reviews = var.enable_access_reviews
 }

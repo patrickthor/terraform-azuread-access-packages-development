@@ -465,6 +465,201 @@ locals {
     if local.effective[name].assignment_duration_days > ceiling
   ]
 
+  # ============================================================================
+  # ACCESS REVIEWS
+  #
+  # PRESENCE MEANS ON. A package gets a review when an access_reviews block exists for it —
+  # either on the package itself or on defaults, which turns it on for everything. There is no
+  # `enabled` field: that plus the master switch would be two switches at the same granularity
+  # with no obvious precedence.
+  #
+  # The master switch is separate and absolute. When enable_access_reviews is false, nothing is
+  # emitted — but the configuration is still resolved and reported, so the intended shape is
+  # reviewable before it goes live. Configured-but-not-deployed is exactly the state someone
+  # would misread as "reviews are on", so it has to be visible.
+  # ============================================================================
+
+  # var.packages entries that declare a review. Nulls are filtered out here, in their own `for`
+  # clause, so nothing below combines a null test with another condition.
+  declared_package_reviews = {
+    for name, p in var.packages : name => p.access_reviews
+    if p.access_reviews != null
+  }
+
+  # Package => the most specific access_reviews block that applies to it. A package is ABSENT
+  # from this map when no review is configured for it, so "is this package reviewed" is a key
+  # lookup rather than a null comparison — the same reason ceiling_by_package omits rather than
+  # nulls. Nothing below has to guard a null.
+  #
+  # Built by merge so later entries win: a per-package block replaces the defaults entry, and
+  # review_effective then layers its individual fields back over defaults field by field.
+  package_review_config = merge(
+    # defaults.access_reviews applies to EVERY package when set. That is the documented
+    # consequence of presence-means-on: there is no per-package opt-out.
+    var.defaults.access_reviews == null ? {} : {
+      for name in local.all_package_names : name => var.defaults.access_reviews
+    },
+    # per access package. Two single-condition filters rather than one compound one: the null
+    # is removed in declared_package_reviews below, and this only narrows to real packages.
+    {
+      for name, cfg in local.declared_package_reviews : name => cfg
+      if contains(local.all_package_names, name)
+    },
+    # per approver package, keyed on the generated package name rather than the scope
+    {
+      for s, name in local.approver_package_name : name => var.approver_packages[s].access_reviews
+      if try(var.approver_packages[s].access_reviews, null) != null
+    },
+  )
+
+  packages_with_review_config = sort(keys(local.package_review_config))
+
+  # Resolved settings, layered defaults-then-package. Only for packages that have a review
+  # configured, so nothing downstream has to test for absence.
+  review_effective = {
+    for name in local.packages_with_review_config : name => {
+      review_frequency = coalesce(
+        local.package_review_config[name].review_frequency,
+        try(var.defaults.access_reviews.review_frequency, null),
+        "quarterly",
+      )
+      review_type = coalesce(
+        local.package_review_config[name].review_type,
+        try(var.defaults.access_reviews.review_type, null),
+        "Reviewers",
+      )
+      duration_in_days = coalesce(
+        local.package_review_config[name].duration_in_days,
+        try(var.defaults.access_reviews.duration_in_days, null),
+        14,
+      )
+      timeout_behavior = coalesce(
+        local.package_review_config[name].timeout_behavior,
+        try(var.defaults.access_reviews.timeout_behavior, null),
+        # Fails safe: an unanswered review removes access rather than keeping it. That is the
+        # opposite of the provider's own default, and the point of having a review at all.
+        "removeAccess",
+      )
+      approver_justification_required = coalesce(
+        local.package_review_config[name].approver_justification_required,
+        try(var.defaults.access_reviews.approver_justification_required, null),
+        true,
+      )
+    }
+  }
+
+  # Reviewers are the scope's systemeier, reusing the data lookup already made for the approval
+  # stage rather than adding a second one. Only populated for review_type "Reviewers" — "Self"
+  # reviews are answered by the assignee and take no reviewer list.
+  review_reviewer_upns = {
+    for name in local.packages_with_review_config :
+    name => local.review_effective[name].review_type == "Reviewers" ? local.v.scopes[local.package_scope[name]].systemeier : []
+  }
+
+  # What the leaf module receives. Null for every package without a review, and for ALL packages
+  # when the master switch is off.
+  access_review_by_package = {
+    for name, kind in local.package_kind : name => (
+      var.enable_access_reviews && contains(local.packages_with_review_config, name)
+      ? {
+        review_frequency                = local.review_effective[name].review_frequency
+        review_type                     = local.review_effective[name].review_type
+        duration_in_days                = local.review_effective[name].duration_in_days
+        timeout_behavior                = local.review_effective[name].timeout_behavior
+        approver_justification_required = local.review_effective[name].approver_justification_required
+        reviewers = [
+          for upn in local.review_reviewer_upns[name] : {
+            object_id    = data.azuread_user.systemeier[upn].object_id
+            subject_type = "singleUser"
+          }
+        ]
+      }
+      : null
+    )
+  }
+
+  # --- validation inputs ------------------------------------------------------
+
+  review_valid_frequencies = ["weekly", "monthly", "quarterly", "halfyearly", "annual"]
+  review_valid_types       = ["Reviewers", "Self"]
+  review_valid_timeouts    = ["keepAccess", "removeAccess"]
+
+  # Approximate recurrence interval in days. Exactness does not matter — the failure mode does.
+  review_interval_days = {
+    weekly     = 7
+    monthly    = 30
+    quarterly  = 90
+    halfyearly = 180
+    annual     = 365
+  }
+
+  reviews_with_bad_frequency = [
+    for name in local.packages_with_review_config : name
+    if !contains(local.review_valid_frequencies, local.review_effective[name].review_frequency)
+  ]
+
+  reviews_with_bad_type = [
+    for name in local.packages_with_review_config : name
+    if !contains(local.review_valid_types, local.review_effective[name].review_type)
+  ]
+
+  reviews_requesting_manager = [
+    for name in local.packages_with_review_config : name
+    if local.review_effective[name].review_type == "Manager"
+  ]
+
+  reviews_with_bad_timeout = [
+    for name in local.packages_with_review_config : name
+    if !contains(local.review_valid_timeouts, local.review_effective[name].timeout_behavior)
+  ]
+
+  reviews_requesting_recommendation = [
+    for name in local.packages_with_review_config : name
+    if local.review_effective[name].timeout_behavior == "acceptAccessRecommendation"
+  ]
+
+  # review_type "Reviewers" with an empty systemeier list has nobody to answer the campaign.
+  reviews_without_reviewers = [
+    for name in local.packages_with_review_config : name
+    if local.review_effective[name].review_type == "Reviewers" && length(local.review_reviewer_upns[name]) == 0
+  ]
+
+  # ----------------------------------------------------------------------------
+  # The review-vs-assignment interval check
+  #
+  # A review that recurs less often than the assignment lasts never runs against a live
+  # assignment: the assignment expires first, the campaign opens with an empty subject list, and
+  # the configuration looks like governance while enforcing nothing.
+  #
+  # Two distinct failures, because the fix is in a different place for each.
+  # ----------------------------------------------------------------------------
+
+  # Packages where the review interval is at least the assignment duration. The general case.
+  reviews_outlasting_assignment = [
+    for name in local.packages_with_review_config : name
+    if contains(local.review_valid_frequencies, local.review_effective[name].review_frequency)
+    && local.effective[name].assignment_duration_days <= local.review_interval_days[local.review_effective[name].review_frequency]
+  ]
+
+  # The cross-repo case: the assignment duration is CAPPED below the review interval by a role's
+  # PIM policy in the vending repo, so the two constraints cannot both be satisfied here. Keyed
+  # only on packages that have a ceiling, so no null reaches the comparison.
+  reviews_unsatisfiable_by_ceiling = [
+    for name, ceiling in local.ceiling_by_package : name
+    if contains(local.packages_with_review_config, name)
+    && contains(local.review_valid_frequencies, local.review_effective[name].review_frequency)
+    && ceiling <= local.review_interval_days[local.review_effective[name].review_frequency]
+  ]
+
+  # The general failure minus the cross-repo one, so each is reported once with the right fix.
+  reviews_outlasting_assignment_local = [
+    for name in local.reviews_outlasting_assignment : name
+    if !contains(local.reviews_unsatisfiable_by_ceiling, name)
+  ]
+
+  # Configured but not deployed, because the master switch is off. Reported, never silent.
+  reviews_configured_not_deployed = var.enable_access_reviews ? [] : local.packages_with_review_config
+
   # ----------------------------------------------------------------------------
   # Catalog resource associations, keyed on (catalog, group)
   #

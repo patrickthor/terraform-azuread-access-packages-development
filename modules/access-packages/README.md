@@ -311,6 +311,87 @@ The package lives in the same catalog as its scope, and that is not configurable
 over a scope belong to whoever owns that scope's delegation boundary. Making it configurable
 would let approval be delegated somewhere the access itself is not.
 
+### `enable_access_reviews` and `access_reviews`
+
+Recurring access reviews on the assignment policy. Two separate things:
+
+**`enable_access_reviews`** — a single boolean master switch, `false` by default. When false, no
+review block is written to any assignment policy regardless of configuration. Deliberately not
+inferred from whether settings are present, so a pipeline can drive it from one checkbox and the
+configuration can be written, reviewed and merged before it goes live.
+
+**`access_reviews`** — an object available on `defaults`, on each `packages` entry, and on each
+`approver_packages` entry. Same layering as `assignment_duration_days`: defaults apply,
+per-package wins field by field.
+
+| Field | Default | Values |
+|---|---|---|
+| `review_frequency` | `quarterly` | `weekly`, `monthly`, `quarterly`, `halfyearly`, `annual` |
+| `review_type` | `Reviewers` | `Reviewers`, `Self`. **`Manager` is rejected** |
+| `duration_in_days` | `14` | How long each campaign stays open |
+| `timeout_behavior` | `removeAccess` | `keepAccess`, `removeAccess` |
+| `approver_justification_required` | `true` | |
+
+**Presence means on.** There is no `enabled` field inside `access_reviews`: that plus the master
+switch would be two switches at the same granularity with no obvious precedence. A package gets a
+review when a block exists for it, and none when it does not.
+
+The consequence worth knowing: setting `defaults.access_reviews` turns reviews on for **every**
+package, and there is no per-package opt-out. If you want reviews on some packages only, leave the
+default unset and set the block on the packages that need it.
+
+**Reviewers are the scope's systemeier** — the same people who approve at gate 1, resolved from the
+same `data.azuread_user` lookup rather than a second one. `Self` reviews take no reviewer list.
+
+`timeout_behavior` defaults to `removeAccess`, which is the opposite of the provider's default. An
+unanswered review that keeps access is not much of a control.
+
+**Not exposed, deliberately:**
+
+- **`starting_on`** — Graph rejects changes to a review's start date after creation, and this
+  resource declares ForceNew on nothing, so a changed value fails at apply rather than replacing
+  cleanly. Left unset, which means now.
+- **`access_recommendation_enabled`** — the recommendation helpers are ID Governance licensed, and
+  guest add-on enforcement from January 2026 specifically blocks guest-scoped reviews that use the
+  affiliation recommendation helper. Staying off keeps this inside P2. `acceptAccessRecommendation`
+  as a `timeout_behavior` is rejected for the same reason: it would depend on a feature that is off.
+
+**`Manager` is rejected** because it reviews against the requestor's manager attribute, which B2B
+guests almost never have populated. With no manager there is no reviewer, so every campaign runs to
+its timeout and `timeout_behavior` becomes the only outcome — governance on paper, nothing enforced.
+
+**Adding, changing or removing a review is an in-place update.** The resource implements
+UpdateContext and marks nothing ForceNew, so no assignment is dropped and nobody loses access. What
+*is* lost on removal is the review campaign and its history, which is the audit trail.
+
+### The review-must-be-shorter-than-the-assignment rule
+
+The most important validation in this feature. A review that recurs less often than the assignment
+lasts never runs against a live assignment: the assignment expires first, the campaign opens with an
+empty subject list, and the configuration reads like recurring governance while enforcing nothing.
+
+Enforced per package: `assignment_duration_days` must be **greater than** the review interval.
+Approximate intervals — weekly 7, monthly 30, quarterly 90, halfyearly 180, annual 365. Exactness
+does not matter; the failure mode does.
+
+There are two failures here with the same cause and different fixes, so they get separate messages.
+The second is the interesting one:
+
+**The cross-repo case.** For `pim_for_groups` roles the assignment duration is already capped by
+`max_assignment_days`, derived from `active_assignment_expire_after` in the vending configuration. So
+a scope whose PIM policy says `P15D` **cannot** carry a quarterly review — the two constraints are
+unsatisfiable together, and no amount of editing this repo fixes it. The error says so and names the
+role:
+
+> Package X has a quarterly review but its assignment duration is capped at 15 days by role Y's PIM
+> policy. Either review more frequently, or raise `active_assignment_expire_after` for that role in
+> the access-vending configuration — which lengthens standing eligibility in exchange for the review
+> becoming the recurring control.
+
+That second option is a real trade, not a formality: you are choosing between a short automatic
+expiry and a longer window with a periodic human affirmation. And the fix is in the *other* repo's
+tfvars, which an operator hitting this has no reason to guess.
+
 ### Removed inputs
 
 `manage_pim_for_groups_roles`, `acknowledge_m3_active_membership`, and `grant_approver_group`
@@ -340,7 +421,9 @@ with an explanation of what replaced it rather than a bare "unsupported argument
 | `gate_1_approvers` | Per package, both kinds, the systemeier as named approvers |
 | `gate_2_approvers` | Repo 1's activation facts, republished, with `attached_group` and `activation_group` per role |
 | `peer_approval_status` | Per scope: the approver package, and where the deadlock remains |
-| `verification_summary` | Grouped by kind, plus totals. **The output that confirms the split landed** |
+| `access_reviews` | Per package: effective review settings, resolved reviewer UPNs, and `deployed` |
+| `access_reviews_configured_not_deployed` | **Packages with review settings while the master switch is off** |
+| `verification_summary` | Grouped by kind, plus totals. **The output that confirms the split landed**. Includes review frequency per package |
 | `scopes`, `access_package_ids`, `assignment_policy_ids`, `effective_policies`, `contract_version` | |
 
 `packages`, `access_package_ids`, `assignment_policy_ids`, `effective_policies` and
@@ -465,6 +548,7 @@ something subtly wrong in the portal.
 | `validate_assignment_expiry_ceiling` | The expiry drift above |
 | `validate_no_duplicate_catalog_resources` | Two scopes sharing an approver group inside one catalog |
 | `validate_peer_approval_viability` | An approver package disabled on a scope with a lone systemeier |
+| `validate_access_reviews` | Invalid frequency / type / timeout; `Manager` reviews; `acceptAccessRecommendation`; an incomplete review block; `Reviewers` with no systemeier; **a review interval that the assignment cannot outlive**, split into the local case and the cross-repo case |
 
 `validate_packages_grant_something` is folded into `validate_packages` and stays **strict**.
 Under contract v2 nothing is excluded for provider reasons, so an all-`pim_for_groups` scope's
@@ -583,6 +667,31 @@ module "access_packages" {
 
   package_overrides = {
     "tenant" = { assignment_duration_days = 7 }
+  }
+
+  # Recurring reviews. Off by default; drive this from a pipeline checkbox. Presence of an
+  # access_reviews block on a package is what selects it — there is no per-package enabled flag.
+  enable_access_reviews = true
+}
+```
+
+A package that carries a review needs an assignment duration **longer** than the review interval,
+which usually means longer than a package without one:
+
+```hcl
+packages = {
+  "prod-admins" = {
+    role_keys = ["prod--reader", "prod--contributor", "prod--owner"]
+
+    # 120 > 90, so the quarterly campaign runs against a live assignment.
+    assignment_duration_days = 120
+
+    access_reviews = {
+      review_frequency = "quarterly"
+      review_type      = "Reviewers"
+      duration_in_days = 14
+      timeout_behavior = "removeAccess"
+    }
   }
 }
 ```

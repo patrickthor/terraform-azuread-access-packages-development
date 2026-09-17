@@ -121,6 +121,10 @@ module "access_package" {
   requestor_justification_required = local.effective[each.key].require_justification
   question_text                    = local.effective[each.key].question_text
 
+  # Null unless a review is configured for this package AND the master switch is on. Reviewers
+  # are the scope's systemeier, resolved from the same data lookup as the approval stage above.
+  access_review = local.access_review_by_package[each.key]
+
   # Exactly one stage, holding the systemeier of the package's scope as named approvers.
   #
   # For an APPROVER package this is the load-bearing rule: the approvers are the systemeier,
@@ -376,6 +380,160 @@ resource "terraform_data" "validate_assignment_expiry_ceiling" {
         The ceiling is the minimum across the roles THIS PACKAGE grants, so a package that does
         not grant the short-lived role is not limited by it. That is one reason to split audiences
         into named packages.
+      EOT
+    }
+  }
+}
+
+resource "terraform_data" "validate_access_reviews" {
+  input = {
+    enabled  = var.enable_access_reviews
+    reviewed = local.packages_with_review_config
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(local.reviews_with_bad_frequency) == 0
+      error_message = <<-EOT
+        These packages have an invalid access review frequency:
+        ${join("\n", [for name in local.reviews_with_bad_frequency : "  ${name}: \"${local.review_effective[name].review_frequency}\""])}
+
+        Valid values: ${join(", ", local.review_valid_frequencies)}
+      EOT
+    }
+
+    precondition {
+      condition     = length(local.reviews_requesting_manager) == 0
+      error_message = <<-EOT
+        These packages set review_type = "Manager": ${join(", ", local.reviews_requesting_manager)}
+
+        Manager reviews are rejected. They review against the requestor's manager attribute, and
+        this tenant's population is B2B guests, who almost never have it populated. With no
+        manager there is no reviewer, so every campaign runs to its timeout and the configured
+        timeout_behavior silently becomes the only outcome — governance on paper, nothing
+        enforced.
+
+        Use "Reviewers" (the scope's systemeier answer the campaign) or "Self". If you have a
+        tenant where manager is reliably populated and want this allowed, it must be documented as
+        guest-hostile rather than quietly permitted.
+      EOT
+    }
+
+    precondition {
+      condition     = length(local.reviews_with_bad_type) == 0
+      error_message = <<-EOT
+        These packages have an invalid access review type:
+        ${join("\n", [for name in local.reviews_with_bad_type : "  ${name}: \"${local.review_effective[name].review_type}\""])}
+
+        Valid values: ${join(", ", local.review_valid_types)}
+      EOT
+    }
+
+    precondition {
+      condition     = length(local.reviews_requesting_recommendation) == 0
+      error_message = <<-EOT
+        These packages set timeout_behavior = "acceptAccessRecommendation": ${join(", ", local.reviews_requesting_recommendation)}
+
+        Rejected because it depends on the access recommendation helper, which this module
+        deliberately does not enable. Recommendations are an ID Governance capability and this
+        system targets Entra ID P2 — and guest add-on enforcement from January 2026 specifically
+        blocks guest-scoped reviews that use the affiliation recommendation helper.
+
+        Choosing it while recommendations are off leaves the timeout outcome undefined, which is
+        worse than either explicit behaviour. Use "removeAccess" (fails safe) or "keepAccess".
+      EOT
+    }
+
+    precondition {
+      condition     = length(local.reviews_with_bad_timeout) == 0
+      error_message = <<-EOT
+        These packages have an invalid review timeout behavior:
+        ${join("\n", [for name in local.reviews_with_bad_timeout : "  ${name}: \"${local.review_effective[name].timeout_behavior}\""])}
+
+        Valid values: ${join(", ", local.review_valid_timeouts)}
+      EOT
+    }
+
+    # The provider's CustomizeDiff requires duration_in_days, review_frequency and
+    # access_review_timeout_behavior to all be present once the block is enabled, and reports a
+    # partial block with a provider-level message that does not name the field. This module
+    # defaults all three, so reaching here means a default was explicitly nulled.
+    precondition {
+      condition = alltrue([
+        for name in local.packages_with_review_config :
+        local.review_effective[name].review_frequency != null
+        && local.review_effective[name].duration_in_days != null
+        && local.review_effective[name].timeout_behavior != null
+      ])
+      error_message = <<-EOT
+        An access review block is incomplete. The provider requires review_frequency,
+        duration_in_days AND timeout_behavior to all be set once a review is enabled:
+        ${join("\n", [for name in local.packages_with_review_config : "  ${name}: review_frequency=${coalesce(local.review_effective[name].review_frequency, "MISSING")} duration_in_days=${coalesce(tostring(local.review_effective[name].duration_in_days), "MISSING")} timeout_behavior=${coalesce(local.review_effective[name].timeout_behavior, "MISSING")}"])}
+
+        This module supplies a default for all three, so an explicit null is the only way to get
+        here. Remove the null rather than setting it.
+      EOT
+    }
+
+    precondition {
+      condition     = length(local.reviews_without_reviewers) == 0
+      error_message = <<-EOT
+        These packages have review_type = "Reviewers" but their scope has no systemeier: ${join(", ", local.reviews_without_reviewers)}
+
+        The reviewers of a package are its scope's systemeier. With none, nobody can answer the
+        campaign, so it runs to its timeout every cycle and the timeout_behavior becomes the only
+        outcome.
+
+        Fix this in the vending configuration by giving the scope a systemeier — the same list
+        that supplies gate 1 approval.
+      EOT
+    }
+
+    # THE ONE THAT MATTERS MOST. A review that recurs less often than the assignment lasts never
+    # runs against a live assignment: the assignment expires first, the campaign opens with an
+    # empty subject list, and the configuration looks like governance while enforcing nothing.
+    precondition {
+      condition     = length(local.reviews_outlasting_assignment_local) == 0
+      error_message = <<-EOT
+        These packages have a review interval at least as long as their assignment duration:
+        ${join("\n", [for name in local.reviews_outlasting_assignment_local : "  ${name}: assignment expires after ${local.effective[name].assignment_duration_days} days, but the ${local.review_effective[name].review_frequency} review recurs roughly every ${local.review_interval_days[local.review_effective[name].review_frequency]} days"])}
+
+        The assignment expires before the first campaign runs, so the review has an empty subject
+        list. Nothing errors and the config reads like recurring governance while enforcing
+        nothing.
+
+        Either raise assignment_duration_days above the review interval, or review more
+        frequently. Approximate intervals: weekly 7, monthly 30, quarterly 90, halfyearly 180,
+        annual 365 days.
+
+        Note which control you actually want. A short assignment with no review IS a control —
+        access lapses on its own. A review only adds value when the assignment outlives it, so
+        that someone has to affirm continued need before it renews.
+      EOT
+    }
+
+    # The cross-repo variant of the same failure. Worth its own message because the fix is in the
+    # other repo's tfvars, which an operator hitting this has no reason to guess.
+    precondition {
+      condition     = length(local.reviews_unsatisfiable_by_ceiling) == 0
+      error_message = <<-EOT
+        These packages have a review interval that their assignment duration CANNOT exceed, because
+        the duration is capped by a role's PIM policy in the access-vending configuration:
+        ${join("\n", [for name in local.reviews_unsatisfiable_by_ceiling : "  Package '${name}' has a ${local.review_effective[name].review_frequency} review (roughly every ${local.review_interval_days[local.review_effective[name].review_frequency]} days) but its assignment duration is capped at ${local.ceiling_by_package[name]} days by role '${local.binding_ceiling_role_by_package[name]}'s PIM policy."])}
+
+        The two constraints are unsatisfiable together. The cap comes from
+        active_assignment_expire_after on that role in the access-vending configuration, surfaced
+        through the contract as max_assignment_days, and exceeding it would let the package
+        assignment outlive the PIM eligibility — the user keeps the group membership and silently
+        loses the ability to activate.
+
+        Either review more frequently, or raise active_assignment_expire_after for that role in
+        the access-vending configuration — which lengthens standing eligibility in exchange for
+        the review becoming the recurring control. That is a real trade, not a formality: you are
+        choosing between a short automatic expiry and a longer window with a periodic human
+        affirmation.
+
+        The fix for the second option is in the OTHER repo's tfvars, not this one.
       EOT
     }
   }

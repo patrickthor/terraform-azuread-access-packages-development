@@ -19,6 +19,9 @@
 > | Eleven cross-map key-consistency validations | Three. The rest are type errors now, which are better errors |
 > | `examples/github-consumption` (§5.1) | `examples/two-module-root` — the reference architecture |
 > | `try()` around gate-2 passthrough fields | Never `try()` a contract field; `contract_version` handles compatibility |
+> | §5.6 "Do not set `assignment_review_settings`. Access reviews are out of scope" | Implemented behind `enable_access_reviews`, off by default. Basic reviews are P2-included; only the recommendation helpers need ID Governance |
+> | The approver group is a resource role on the scope's package | Its own package, one per scope, so approval rights and access are independent grants |
+> | `pim_for_groups` roles excluded from IaC (`EligibleMember` gap) | Contract v2 attaches a plain carrier group as `Member`; nothing is excluded |
 >
 > What carried over unchanged: one package per scope, gate 1 = `systemeier` and gate 2 =
 > repo 1, `terraform_data` preconditions over `check` blocks, the two-flag `EligibleMember`

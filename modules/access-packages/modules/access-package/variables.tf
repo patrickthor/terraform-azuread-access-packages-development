@@ -97,8 +97,12 @@ variable "policy_description" {
 
 variable "duration_in_days" {
   description = <<-EOT
-    How long an assignment lasts before it expires automatically. Short durations
-    are this POC's substitute for access reviews.
+    How long an assignment lasts before it expires automatically. A short duration is a control
+    in its own right: access lapses with nobody in the loop.
+
+    When var.access_review is also set, this must be LONGER than the review interval, or the
+    assignment expires before the first campaign opens and the review has an empty subject list.
+    The calling module enforces that.
   EOT
   type        = number
   default     = 14
@@ -152,6 +156,96 @@ variable "question_text" {
   EOT
   type        = string
   default     = null
+}
+
+variable "access_review" {
+  description = <<-EOT
+    Recurring access review on this package's assignment policy. Null means no review block is
+    emitted at all.
+
+    The caller resolves and layers this; the leaf just writes it. `reviewers` must be non-empty
+    when review_type is "Reviewers" — a review with no reviewer cannot be answered and falls
+    through to the timeout behaviour, which looks like governance while enforcing nothing.
+
+    NOT exposed: `starting_on`, because Graph rejects changes to a review's start date after
+    creation and this resource declares ForceNew on nothing, so a changed value fails at apply
+    rather than replacing cleanly. It defaults to now.
+
+    NOT exposed: `access_recommendation_enabled`. The recommendation helpers are the
+    ID-Governance-licensed area, and this system targets P2.
+
+    REMOVING this block is an in-place update — the resource implements UpdateContext and marks
+    nothing ForceNew, so no assignment is dropped and nobody loses access. What IS lost is the
+    review campaign and its history, which is the audit trail.
+  EOT
+
+  type = object({
+    review_frequency                = string
+    review_type                     = string
+    duration_in_days                = number
+    timeout_behavior                = string
+    approver_justification_required = optional(bool, true)
+
+    reviewers = optional(list(object({
+      object_id    = string
+      subject_type = string
+    })), [])
+  })
+
+  default = null
+
+  validation {
+    condition = var.access_review == null ? true : contains(
+      ["weekly", "monthly", "quarterly", "halfyearly", "annual"],
+      var.access_review.review_frequency,
+    )
+    error_message = "access_review.review_frequency must be one of: weekly, monthly, quarterly, halfyearly, annual."
+  }
+
+  validation {
+    condition = var.access_review == null ? true : contains(
+      ["Reviewers", "Self"], var.access_review.review_type,
+    )
+    error_message = <<-EOT
+      access_review.review_type must be "Reviewers" or "Self".
+
+      "Manager" is rejected. It reviews against the requestor's manager attribute, which B2B
+      guest users almost never have populated — with no manager there is no reviewer, and the
+      campaign falls silently through to the timeout behaviour.
+    EOT
+  }
+
+  validation {
+    condition = var.access_review == null ? true : contains(
+      ["keepAccess", "removeAccess"], var.access_review.timeout_behavior,
+    )
+    error_message = <<-EOT
+      access_review.timeout_behavior must be "keepAccess" or "removeAccess".
+
+      "acceptAccessRecommendation" is rejected because it depends on the access recommendation
+      helper, which this module does not enable — recommendations are ID Governance licensed and
+      this system targets P2. Selecting it while recommendations are off leaves the timeout
+      behaviour undefined.
+    EOT
+  }
+
+  validation {
+    condition     = var.access_review == null ? true : var.access_review.duration_in_days >= 1 && var.access_review.duration_in_days <= 365
+    error_message = "access_review.duration_in_days must be between 1 and 365. It is how long each review campaign stays open, not how often it recurs."
+  }
+
+  validation {
+    condition = var.access_review == null ? true : (
+      var.access_review.review_type != "Reviewers" || length(var.access_review.reviewers) > 0
+    )
+    error_message = <<-EOT
+      access_review.reviewers cannot be empty when review_type is "Reviewers".
+
+      A review with no reviewer cannot be answered by anyone, so every campaign runs to its
+      timeout and the configured timeout_behavior silently becomes the only outcome. That is a
+      config that looks like governance and enforces nothing.
+    EOT
+  }
 }
 
 variable "approval_stages" {

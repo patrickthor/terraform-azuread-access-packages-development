@@ -40,7 +40,8 @@ resource "azuread_access_package_assignment_policy" "this" {
   display_name      = var.policy_display_name
   description       = var.policy_description
 
-  # Short duration is this POC's substitute for access reviews. The assignment
+  # Short duration is the baseline control, with a recurring review as the optional
+  # complement below rather than a replacement. The assignment
   # expires on its own and the user has to request again.
   duration_in_days = var.duration_in_days
 
@@ -93,9 +94,52 @@ resource "azuread_access_package_assignment_policy" "this" {
     }
   }
 
-  # assignment_review_settings is deliberately not set. Access reviews are out of
-  # scope for this POC (no Governance add-on assumed) and a short
-  # duration_in_days is the deliberate substitute. See section 5.4.
+  # Recurring access review. Emitted only when the caller passes one — the caller owns both the
+  # master switch and the per-package layering, so a null here means "no review block", full stop.
+  #
+  # Short duration_in_days on the assignment remains the baseline control. A review is the
+  # recurring complement to it, not a replacement: the assignment still expires on its own.
+  #
+  # The provider's CustomizeDiff requires duration_in_days, review_frequency and
+  # access_review_timeout_behavior to all be set once the block is enabled. The type constraint on
+  # var.access_review makes all three non-optional so a partial block cannot be constructed, and
+  # the parent module validates the same thing earlier with a message naming the missing field.
+  #
+  # NO ForceNew anywhere on this resource: it implements UpdateContext and marks nothing for
+  # replacement, so adding, changing or removing this block is an in-place update of the
+  # assignment policy. No assignment is dropped and nobody loses access. What IS lost on removal
+  # is the review campaign and its history, which is the audit trail.
+  dynamic "assignment_review_settings" {
+    for_each = var.access_review == null ? [] : [var.access_review]
+
+    content {
+      enabled          = true
+      review_frequency = assignment_review_settings.value.review_frequency
+      review_type      = assignment_review_settings.value.review_type
+      duration_in_days = assignment_review_settings.value.duration_in_days
+
+      access_review_timeout_behavior  = assignment_review_settings.value.timeout_behavior
+      approver_justification_required = assignment_review_settings.value.approver_justification_required
+
+      # starting_on is deliberately unset: Graph rejects changes to a review's start date after
+      # creation, and with no ForceNew a changed value fails at apply rather than replacing
+      # cleanly. Unset means "now".
+      #
+      # access_recommendation_enabled is deliberately unset, leaving it false. The recommendation
+      # helpers are ID Governance licensed, and guest add-on enforcement from January 2026
+      # specifically blocks guest-scoped reviews that use the affiliation recommendation helper.
+      # Staying off keeps this inside P2.
+
+      dynamic "reviewer" {
+        for_each = assignment_review_settings.value.reviewers
+
+        content {
+          object_id    = reviewer.value.object_id
+          subject_type = reviewer.value.subject_type
+        }
+      }
+    }
+  }
 
   depends_on = [
     azuread_access_package_resource_package_association.this

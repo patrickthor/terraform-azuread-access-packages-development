@@ -358,6 +358,54 @@ landed, and any `access` entry showing an approver group means it did not.
 
 ---
 
+## Access reviews
+
+Recurring reviews on the assignment policies, off by default behind a single master switch:
+
+```hcl
+enable_access_reviews = true    # drive from a pipeline checkbox
+```
+
+A package is reviewed when an `access_reviews` block exists for it — on `defaults` (which turns it
+on for every package) or on an individual `packages` / `approver_packages` entry. There is no
+`enabled` field inside the block: presence means on, and one switch at each granularity.
+
+```hcl
+access_reviews = {
+  review_frequency = "quarterly"      # weekly | monthly | quarterly | halfyearly | annual
+  review_type      = "Reviewers"      # the scope's systemeier answer it
+  duration_in_days = 14               # how long each campaign stays open
+  timeout_behavior = "removeAccess"   # fails safe if nobody answers
+}
+```
+
+**A reviewed package needs a LONGER assignment duration, not a shorter one.** That is the
+counter-intuitive part and the module enforces it. A short assignment is already a control — access
+lapses on its own. A review only adds something when the assignment outlives the review interval, so
+a human has to affirm continued need before it renews. Set the duration below the interval and the
+assignment expires before the first campaign opens, leaving it with an empty subject list.
+
+For `pim_for_groups` roles the duration is already capped by the vending repo's
+`active_assignment_expire_after`, so some combinations are **unsatisfiable** — a scope capped at 15
+days cannot carry a quarterly review. The error says so, names the role, and points at the other
+repo's tfvars, because that is where the fix lives.
+
+Approver packages arguably need reviews most: standing rights conferring authority over other
+people's access, with no activation step in between.
+
+Reviewers are the scope's systemeier, resolved from the same lookup that supplies gate 1 approval.
+
+**Nothing here needs ID Governance.** Basic access reviews are P2-included. Three capabilities that
+do require Governance are deliberately absent from the default path: inactive-user reviews,
+user-to-group affiliation recommendations, and catalog-wide reviews. `starting_on` is not exposed
+either, because Graph rejects changing it after creation and the resource has no ForceNew, so a
+change would fail at apply.
+
+`terraform output access_reviews` shows the effective settings and whether they are deployed;
+`access_reviews_configured_not_deployed` is the list that distinguishes configured from in force.
+
+---
+
 ## Verified in this tenant
 
 Blank rows are honest unverified claims. A filled-in row that nobody tested is not.
@@ -372,6 +420,13 @@ Blank rows are honest unverified claims. A filled-in row that nobody tested is n
 | Does a lone systemeier fail to activate their own dual-approval role? | | |
 | Can someone hold the approver package without holding the access package? | | |
 | How long does gate 2 propagation take? | | |
+| **Can a B2B guest be recorded as a `Reviewers` entry at all?** | | |
+| Does a review campaign open with a non-empty subject list? | | |
+| Do basic access reviews work on P2 without the Governance add-on? | | |
+
+The first review row is the one to settle before adopting reviews. This tenant's population is
+entirely B2B guests, and nobody has confirmed a guest can be a reviewer — the code is written as
+though it works, and that is not the same as knowing.
 
 ---
 

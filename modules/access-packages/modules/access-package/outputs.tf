@@ -35,5 +35,15 @@ output "effective_policy" {
     approval_stage_count   = length(var.approval_stages)
     justification_required = var.requestor_justification_required
     requestor_scope_type   = var.requestor_scope_type
+
+    # Whether a recurring review was actually written onto this policy, and with what. null
+    # means no review block was emitted.
+    access_review = var.access_review == null ? null : {
+      review_frequency = var.access_review.review_frequency
+      review_type      = var.access_review.review_type
+      duration_in_days = var.access_review.duration_in_days
+      timeout_behavior = var.access_review.timeout_behavior
+      reviewer_count   = length(var.access_review.reviewers)
+    }
   }
 }

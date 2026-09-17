@@ -48,11 +48,31 @@ variable "defaults" {
     require_justification    = optional(bool, true)
     approval_timeout_days    = optional(number, 7)
 
+    access_reviews = optional(object({
+      review_frequency                = optional(string)
+      review_type                     = optional(string)
+      duration_in_days                = optional(number)
+      timeout_behavior                = optional(string)
+      approver_justification_required = optional(bool)
+    }))
+
     # No default: passed through only so the module can reject it by name if a caller still
     # sets it. A default here would trip that rejection on every apply.
     grant_approver_group = optional(bool)
   })
   default = {}
+}
+
+variable "enable_access_reviews" {
+  description = <<-EOT
+    MASTER SWITCH for recurring access reviews. Off by default.
+
+    Separate from the review settings on purpose, so a pipeline can drive it from one checkbox and
+    the configuration can be merged before it goes live. `access_reviews_configured_not_deployed`
+    reports the in-between state.
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "packages" {
@@ -71,7 +91,16 @@ variable "packages" {
     question_text            = optional(string)
     hidden                   = optional(bool)
     requests_accepted        = optional(bool)
-    grant_approver_group     = optional(bool)
+
+    access_reviews = optional(object({
+      review_frequency                = optional(string)
+      review_type                     = optional(string)
+      duration_in_days                = optional(number)
+      timeout_behavior                = optional(string)
+      approver_justification_required = optional(bool)
+    }))
+
+    grant_approver_group = optional(bool)
   }))
   default = {}
 }
@@ -91,6 +120,14 @@ variable "approver_packages" {
     question_text            = optional(string)
     hidden                   = optional(bool)
     requests_accepted        = optional(bool)
+
+    access_reviews = optional(object({
+      review_frequency                = optional(string)
+      review_type                     = optional(string)
+      duration_in_days                = optional(number)
+      timeout_behavior                = optional(string)
+      approver_justification_required = optional(bool)
+    }))
   }))
   default = {}
 }

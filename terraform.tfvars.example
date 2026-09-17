@@ -59,6 +59,32 @@ defaults = {
 #   }
 # }
 
+# Recurring access reviews. MASTER SWITCH, off by default — drive it from a pipeline checkbox.
+#
+# While false, review settings are still resolved and reported (see the access_reviews and
+# access_reviews_configured_not_deployed outputs) but nothing is written to any assignment
+# policy. That lets the configuration be written and merged before it goes live.
+enable_access_reviews = false
+
+# Reviews are selected by PRESENCE of an access_reviews block, on defaults (which turns them on
+# for every package) or on individual packages / approver_packages. There is no enabled field.
+#
+# A reviewed package needs an assignment duration LONGER than the review interval, or the
+# assignment expires before the first campaign runs and the review has nobody in it. That is a
+# plan-time failure, not a silent one.
+#
+# approver_packages = {
+#   "tenant" = {
+#     assignment_duration_days = 365
+#     access_reviews = {
+#       review_frequency = "halfyearly"   # weekly|monthly|quarterly|halfyearly|annual
+#       review_type      = "Reviewers"    # the scope's systemeier answer it; Manager is rejected
+#       duration_in_days = 21             # how long each campaign stays open
+#       timeout_behavior = "removeAccess" # fails safe if nobody answers
+#     }
+#   }
+# }
+
 # Only where you deviate from defaults. Keyed on PACKAGE name; on the default path those
 # are scope names.
 package_overrides = {

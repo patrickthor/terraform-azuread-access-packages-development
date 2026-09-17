@@ -93,6 +93,16 @@ variable "defaults" {
     require_justification    = optional(bool, true)
     approval_timeout_days    = optional(number, 7)
 
+    # Setting this turns reviews on for EVERY package, with no per-package opt-out. Leave unset
+    # and configure per package if you want reviews on some only.
+    access_reviews = optional(object({
+      review_frequency                = optional(string)
+      review_type                     = optional(string)
+      duration_in_days                = optional(number)
+      timeout_behavior                = optional(string)
+      approver_justification_required = optional(bool)
+    }))
+
     # Declared with NO default, and passed through, so that a caller who still sets it gets
     # the module's explanation of what replaced it rather than a bare "unsupported argument".
     # A default here would trip that rejection on every apply.
@@ -124,6 +134,15 @@ variable "packages" {
     question_text            = optional(string)
     hidden                   = optional(bool)
     requests_accepted        = optional(bool)
+
+    # Presence means this package gets a recurring review. No `enabled` field by design.
+    access_reviews = optional(object({
+      review_frequency                = optional(string)
+      review_type                     = optional(string)
+      duration_in_days                = optional(number)
+      timeout_behavior                = optional(string)
+      approver_justification_required = optional(bool)
+    }))
 
     # Passed through only so the module can reject it by name. See var.approver_packages.
     grant_approver_group = optional(bool)
@@ -171,6 +190,27 @@ variable "approver_packages" {
     question_text            = optional(string)
     hidden                   = optional(bool)
     requests_accepted        = optional(bool)
+
+    access_reviews = optional(object({
+      review_frequency                = optional(string)
+      review_type                     = optional(string)
+      duration_in_days                = optional(number)
+      timeout_behavior                = optional(string)
+      approver_justification_required = optional(bool)
+    }))
   }))
   default = {}
+}
+
+variable "enable_access_reviews" {
+  description = <<-EOT
+    MASTER SWITCH for recurring access reviews. When false, no review block is written to any
+    assignment policy regardless of what `access_reviews` configuration exists.
+
+    Intended to be driven from a pipeline checkbox, so the configuration can be written, reviewed
+    and merged before it goes live. Configuration is still resolved and reported when this is
+    false — see the `access_reviews` and `access_reviews_configured_not_deployed` outputs.
+  EOT
+  type        = bool
+  default     = false
 }

@@ -127,6 +127,20 @@ supports it for PIM-managed groups; the `azuread` provider does not. Passing it
 would silently degrade just-in-time access into standing access without failing.
 Validation rejects it and explains why. See blocker 2.1.
 
-**`assignment_review_settings` is deliberately unset.** Access reviews are out of
-scope (no Governance add-on assumed) and a short `duration_in_days` is the
-substitute: the assignment expires and the user has to request again.
+**`assignment_review_settings` is written when the caller passes `access_review`.** Null means
+no block is emitted. The caller owns the master switch and the per-package layering; this module
+just writes what it is handed, and rejects `Manager` review types,
+`acceptAccessRecommendation` timeouts, and a `Reviewers` review with no reviewers.
+
+`starting_on` and `access_recommendation_enabled` are not exposed — the first because Graph
+rejects changing it after creation and this resource has no ForceNew, the second because
+recommendations are ID Governance licensed.
+
+Adding, changing or removing the block is an in-place update: no assignment is dropped. What is
+lost on removal is the review campaign and its history.
+
+**Short assignment durations remain the baseline control**, and a review is the recurring
+complement rather than a replacement: the assignment still expires on its own. Note that the two
+pull in opposite directions — a reviewed package needs a duration *longer* than its review
+interval, or the assignment lapses before the first campaign has anyone in it. The parent module
+enforces that.

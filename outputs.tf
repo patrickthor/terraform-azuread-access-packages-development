@@ -51,6 +51,19 @@ output "packages" {
   value       = module.access_packages.packages
 }
 
+output "access_reviews" {
+  description = <<-EOT
+    Package → the recurring review configured for it, its resolved reviewers, and whether it is
+    actually deployed. `deployed = false` means configured but not in force.
+  EOT
+  value       = module.access_packages.access_reviews
+}
+
+output "access_reviews_configured_not_deployed" {
+  description = "Packages with review configuration while enable_access_reviews is false. Empty when the switch is on."
+  value       = module.access_packages.access_reviews_configured_not_deployed
+}
+
 output "approver_packages" {
   description = "Scope → the package granting peer-approval rights over it. Gate 1 is the systemeier, never the approver group."
   value       = module.access_packages.approver_packages

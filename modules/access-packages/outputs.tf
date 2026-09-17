@@ -325,7 +325,61 @@ length(local.unpackaged_role_keys) == 0 ? [] : [
 [
   for s in local.deadlocked_approver_scopes : "Add a second member to the approver group '${local.scopes_with_approver_group[s]}' for scope '${s}'. It has ${length(local.v.scopes[s].systemeier)} systemeier, PIM blocks self-approval, and its approver package is disabled — so dual-approval roles there cannot be activated by that person alone."
 ],
+length(local.reviews_configured_not_deployed) == 0 ? [] : [
+  "Access reviews are CONFIGURED BUT NOT DEPLOYED on ${length(local.reviews_configured_not_deployed)} package(s): ${join(", ", local.reviews_configured_not_deployed)}. enable_access_reviews is false, so no review block was written to any assignment policy. The settings are in the access_reviews output for review, but nothing recurring is in force — do not read the presence of configuration as reviews being on. Set enable_access_reviews = true to deploy them.",
+],
+length(local.packages_with_review_config) == 0 || !var.enable_access_reviews ? [] : [
+  "Access reviews are live on ${length(local.packages_with_review_config)} package(s). Two things need confirming by hand, because neither is verifiable from Terraform: that a B2B guest can actually be recorded as a reviewer in this tenant, and that the first campaign opens with a non-empty subject list. A review with an empty subject list runs to its timeout and enforces nothing.",
+],
 )
+}
+
+output "access_reviews" {
+  description = <<-EOT
+    Package name → the recurring access review configured for it, with the resolved reviewers and
+    whether it is actually deployed.
+
+    `deployed` is the master switch. **A package appears here with `deployed = false` when review
+    settings exist but `enable_access_reviews` is false** — that is the configured-but-not-live
+    state, and it is reported precisely because it is the one someone would misread as "reviews
+    are on". Nothing is written to the assignment policy until the switch is on.
+
+    Packages with no review configuration are absent from this map entirely.
+
+    `reviewer_upns` are the scope's systemeier, the same people who approve at gate 1, resolved
+    from the same data lookup. Empty for `review_type = "Self"`, where the assignee answers.
+  EOT
+  value = {
+    for name in local.packages_with_review_config : name => {
+      kind             = local.package_kind[name]
+      scope            = local.package_scope[name]
+      deployed         = var.enable_access_reviews
+      review_frequency = local.review_effective[name].review_frequency
+      review_type      = local.review_effective[name].review_type
+      duration_in_days = local.review_effective[name].duration_in_days
+      timeout_behavior = local.review_effective[name].timeout_behavior
+
+      approver_justification_required = local.review_effective[name].approver_justification_required
+      reviewer_upns                   = local.review_reviewer_upns[name]
+
+      # The interval check that matters: the assignment has to outlive the review for the
+      # campaign to have anyone in it.
+      assignment_duration_days = local.effective[name].assignment_duration_days
+      review_interval_days     = lookup(local.review_interval_days, local.review_effective[name].review_frequency, null)
+      expiry_ceiling_days      = lookup(local.ceiling_by_package, name, null)
+    }
+  }
+}
+
+output "access_reviews_configured_not_deployed" {
+  description = <<-EOT
+    Packages that have review configuration while `enable_access_reviews` is false. Empty when the
+    master switch is on, or when nothing is configured.
+
+    Broken out as its own output rather than left for someone to notice inside `access_reviews`,
+    because "configured" and "in force" look identical if you only read the settings.
+  EOT
+  value       = local.reviews_configured_not_deployed
 }
 
 output "peer_approval_status" {
@@ -378,6 +432,14 @@ output "verification_summary" {
         gate_1_approver_count  = length(local.v.scopes[local.package_scope[name]].systemeier)
         pim_backed_roles       = [for k in p.role_keys : local.v.roles[k].role if local.v.roles[k].jit_mechanism == "pim_for_groups"]
         gate_2_unmanaged_roles = [for k in p.role_keys : local.v.roles[k].role if local.v.roles[k].jit_mechanism == "entra_role"]
+
+        # "none" when no review is configured. The suffix is deliberate noise: a frequency shown
+        # without it would read as in force.
+        review = (
+          contains(local.packages_with_review_config, name)
+          ? "${local.review_effective[name].review_frequency}${var.enable_access_reviews ? "" : " — CONFIGURED, NOT DEPLOYED"}"
+          : "none"
+        )
       }
     }
     approver = {
@@ -389,6 +451,12 @@ output "verification_summary" {
         duration_days         = local.effective[name].assignment_duration_days
         gate_1_approver_count = length(local.v.scopes[s].systemeier)
         gate_1_is_systemeier  = true
+
+        review = (
+          contains(local.packages_with_review_config, name)
+          ? "${local.review_effective[name].review_frequency}${var.enable_access_reviews ? "" : " — CONFIGURED, NOT DEPLOYED"}"
+          : "none"
+        )
       }
     }
     totals = {
@@ -399,6 +467,10 @@ output "verification_summary" {
       roles_excluded    = length(local.excluded_role_keys)
       roles_unpackaged  = length(local.unpackaged_role_keys)
       contract_version  = local.v.contract_version
+
+      access_reviews_enabled    = var.enable_access_reviews
+      packages_with_review      = length(local.packages_with_review_config)
+      reviews_actually_deployed = var.enable_access_reviews ? length(local.packages_with_review_config) : 0
     }
   }
 }

@@ -49,8 +49,10 @@ currently two states. The remote state read lives in the root, never in the modu
 
 - POC tenant on **Entra ID P2**, no Governance add-on. Whether that is even enough is the
   first open question; run `scripts/verify-entitlement-management.sh`.
-- Access reviews and lifecycle workflows are out of scope. Short assignment expiry plus
-  manual re-request is the deliberate substitute.
+- Recurring access reviews ARE now supported, behind an off-by-default master switch. Lifecycle
+  workflows remain out of scope. Short assignment expiry is still the baseline control; a review is
+  the optional recurring complement, and a reviewed package needs a LONGER duration than an
+  unreviewed one so the campaign has a live assignment to run against.
 - Subscription creation is out of scope.
 - The design must carry over to AWS/GCP/GitHub. Catalogs and the package/policy pattern are
   cloud-agnostic; only the group's underlying authorization binding is cloud-specific, and
@@ -136,6 +138,55 @@ those are derivable from its input variables alone, so they are known at plan ti
 form worked and was one repo-1 refactor away from `The "for_each" value depends on resource
 attributes that cannot be determined until apply` — surfacing in this module for a change
 made in the other repo.
+
+**Access reviews on the assignment policies.** `assignment_review_settings` is a nested block on
+`azuread_access_package_assignment_policy`, which this module already creates, so this needed no
+contract change, no `contract_version` bump and no new Graph permission —
+`EntitlementManagement.ReadWrite.All` already covers the policy. It lifts the leaf module's old
+"access reviews are out of scope" note.
+
+Two separate controls, deliberately. `enable_access_reviews` is a single boolean master switch,
+off by default, meant to be driven from a pipeline checkbox. `access_reviews` is an object on
+`defaults`, each `packages` entry and each `approver_packages` entry, layered the same way as
+`assignment_duration_days`. PRESENCE of the block means that package is reviewed — there is no
+`enabled` field inside it, because that plus the master switch would be two switches at the same
+granularity with no obvious precedence, which is a pattern this project has already had to unwind
+once.
+
+Configuration is resolved and reported even when the switch is off, and the
+configured-but-not-deployed state is broken out into its own output. "Configured" and "in force"
+look identical if you only read the settings.
+
+THE VALIDATION THAT MATTERS: `assignment_duration_days` must EXCEED the review interval. A review
+that recurs less often than the assignment lasts never runs against a live assignment — it opens
+with an empty subject list, and the config reads like recurring governance while enforcing
+nothing. Consequence worth internalising: a reviewed package needs a LONGER duration than an
+unreviewed one, which is the opposite of the instinct. A short assignment is already a control; a
+review only adds anything when the assignment outlives it.
+
+That check has a cross-repo variant with its own message. For `pim_for_groups` roles the duration
+is already capped by `max_assignment_days`, from `active_assignment_expire_after` in the vending
+configuration, so a scope capped at 15 days CANNOT carry a quarterly review — unsatisfiable, and
+unfixable in this repo. The error names the role and says the fix is the other repo's tfvars, plus
+what the trade costs: longer standing eligibility in exchange for the review becoming the recurring
+control.
+
+Rejected rather than accepted-and-ignored: `review_type = "Manager"` (this tenant is all B2B
+guests, who have no manager attribute, so the campaign would fall silently through to the timeout
+behaviour) and `timeout_behavior = "acceptAccessRecommendation"` (depends on the recommendation
+helper, which is ID Governance licensed and deliberately not enabled). `starting_on` and
+`access_recommendation_enabled` are not exposed at all — the first because Graph rejects changing
+it after creation and the resource has no ForceNew, so it would fail at apply rather than replace;
+the second for licensing.
+
+`timeout_behavior` defaults to `removeAccess`, the opposite of the provider's default. An
+unanswered review that keeps access is not much of a control.
+
+Reviewers are the scope's systemeier, reusing the existing `data.azuread_user` lookup rather than
+adding a second one. Adding, changing or removing a review is an IN-PLACE update — the resource
+implements UpdateContext and marks nothing ForceNew, so no assignment is dropped. What is lost on
+removal is the campaign history, which is the audit trail; that is called out in the variable
+description.
 
 **Approver packages split out.** Peer-approval rights are now their own package, one per scope,
 granting only the approver group. Previously the approver group was a resource role on the access
@@ -234,6 +285,10 @@ reproducible.
 | D13 | Peer-approval rights are their own package, one per scope, not a resource role on the access package |
 | D14 | Gate 1 on an approver package is the systemeier, never the approver group — the escalation chain must terminate |
 | D15 | Only contract v2 is accepted. No branch for v1, so the EligibleMember exclusion path is gone rather than dormant |
+| D16 | Access reviews behind a single boolean master switch, separate from the per-package settings |
+| D17 | Review presence, not an `enabled` field, selects which packages are reviewed |
+| D18 | Assignment duration must exceed the review interval, enforced at plan time |
+| D19 | `Manager` reviews, `acceptAccessRecommendation`, `starting_on` and `access_recommendation_enabled` are all excluded — guest population and P2 licensing |
 
 ### Why cross-scope packages are rejected rather than resolved
 
@@ -279,6 +334,9 @@ into a plan failure.
 | R3 | An `entra_role` scope hands out `Groups Administrator`, which can rewrite the PIM policies of every group repo 1 creates. Gate 1 is the only gate Terraform enforces | Mitigated by the shortest duration, its own catalog, and a named manual step |
 | R4 | A scope whose roles are all excluded would grant nothing once the approver group moved out | **RESOLVED** by v2 landing together with the split: nothing is excluded, so the package grants real memberships |
 | R12 | An approver package holder can approve activation for access they do not hold | Accepted deliberately. That is the point of separating the rights, and gate 1 on the approver package is the systemeier |
+| R13 | **A B2B guest may not be usable as a review `Reviewers` entry.** Unconfirmed | **Unverified.** The code is written as though it works. Being spiked by hand before adoption; do not claim it in docs until tested |
+| R14 | Enabling reviews lengthens assignment durations, which lengthens standing access between campaigns | Inherent to the trade, not a defect. The precondition forces the choice to be explicit rather than accidental |
+| R15 | Removing a review silently discards its campaign history | Documented in the variable description. The resource has no ForceNew, so removal is otherwise invisible in a plan |
 | R5 | Renaming a scope or role key in repo 1 is destructive and invalidates every object ID in the contract | Treat the key set as append-only across both repos |
 | R6 | `CallerNotResourceOwner` if repo 2 runs as a different identity from repo 1 | Mitigated by using one identity for both modules |
 | R7 | Assignment expiry outliving the PIM eligibility expiry causes silent access loss | Precondition per package, from repo 1's `max_assignment_days` |

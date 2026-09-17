@@ -45,6 +45,35 @@ name, carrying a `kind` of `"access"` or `"approver"`.
 The generated approver name is reserved: a `var.packages` key colliding with it fails the plan
 rather than either being renamed.
 
+**C. Access reviews are IMPLEMENTED.** The leaf module's old "assignment_review_settings is
+deliberately not set / access reviews are out of scope" note no longer applies.
+
+`enable_access_reviews` is a single boolean MASTER SWITCH, off by default, driven from a pipeline
+checkbox. `access_reviews` is an object on `defaults`, each `packages` entry and each
+`approver_packages` entry, layered like `assignment_duration_days`. PRESENCE of the block selects a
+package — there is deliberately NO `enabled` field inside it.
+
+Configuration is resolved and reported even when the switch is off; `access_reviews` carries a
+`deployed` flag and `access_reviews_configured_not_deployed` is its own output.
+
+THE KEY RULE: `assignment_duration_days` must EXCEED the review interval (weekly 7, monthly 30,
+quarterly 90, halfyearly 180, annual 365), or the assignment expires before the first campaign and
+the review has an empty subject list. So a reviewed package needs a LONGER duration than an
+unreviewed one. The cross-repo variant — where `max_assignment_days` caps the duration below the
+interval — gets its own message naming the role and pointing at the vending repo's tfvars.
+
+Rejected: `review_type = "Manager"` (guest populations have no manager attribute) and
+`timeout_behavior = "acceptAccessRecommendation"` (needs the ID-Governance recommendation helper).
+NOT exposed: `starting_on` (Graph rejects post-creation changes and there is no ForceNew, so it
+would fail at apply) and `access_recommendation_enabled` (licensing).
+
+`timeout_behavior` defaults to `removeAccess`. Reviewers are the scope's systemeier, reusing the
+existing `data.azuread_user.systemeier` lookup — do not add a second one.
+
+No contract change, no `contract_version` bump, no new Graph permission.
+
+UNVERIFIED, do not assert in docs: whether a B2B guest can be a `Reviewers` entry at all.
+
 **B. Contract v2 — no more EligibleMember exclusions.** Repo 1 creates a plain, non-PIM group per
 `pim_for_groups` role and makes it an eligible member of the PIM-managed group. `access_type` is
 `Member` for every mechanism, `group_object_id` is the PLAIN group to attach, and
@@ -257,11 +286,13 @@ module to run.
 | `granted_groups_by_package` | What each package actually grants, after exclusions. |
 | `packages` | Per package: `kind` (access/approver), source, scope, catalog, declared vs attached vs excluded roles. |
 | `unpackaged_roles` | Contract roles no package grants — access nobody can request. |
+| `access_reviews` | Per package: effective review settings, resolved reviewer UPNs, and whether deployed. |
+| `access_reviews_configured_not_deployed` | Packages with review settings while the master switch is off. |
 | `approver_packages` | Scope -> the package granting peer-approval rights over it. |
 | `gate_1_approvers` | Per package, the systemeier acting as named approvers. |
 | `gate_2_approvers` | Repo 1's activation rules, republished verbatim. |
 | `peer_approval_status` | Per scope: the approver package, and where the deadlock remains. |
-| `verification_summary` | Grouped BY KIND plus totals — the output that confirms the access/approver split landed. |
+| `verification_summary` | Grouped BY KIND plus totals, including review frequency per package — the output that confirms what landed. |
 
 ## Licensing — verify before building further
 

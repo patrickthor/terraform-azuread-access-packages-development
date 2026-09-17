@@ -212,6 +212,51 @@ variable "catalogs" {
 # Access packages
 # ------------------------------------------------------------------------------
 
+# ------------------------------------------------------------------------------
+# Access reviews
+# ------------------------------------------------------------------------------
+
+variable "enable_access_reviews" {
+  description = <<-EOT
+    MASTER SWITCH for recurring access reviews. When false, no review block is emitted on any
+    assignment policy regardless of what `access_reviews` configuration exists.
+
+    A single boolean the caller sets — deliberately not inferred from whether review settings are
+    present, so a pipeline can drive it from one checkbox and the configuration can be written,
+    reviewed and merged before it goes live.
+
+    Configuration is still resolved and reported when this is false: the `access_reviews` output
+    shows the intended shape with `deployed = false`, and `manual_steps_required` calls out the
+    configured-but-not-deployed state. That combination is exactly what someone would otherwise
+    misread as "reviews are on".
+
+    Turning this from true to false REMOVES the review block, which is an in-place update of the
+    assignment policy — no assignment is dropped and nobody loses access. What is lost is the
+    review campaign and its history, which is the audit trail.
+  EOT
+  type        = bool
+  default     = false
+}
+
+# The shape reused on `defaults`, each `packages` entry and each `approver_packages` entry.
+# Terraform has no type aliases, so it is repeated below; this comment is the single description.
+#
+#   review_frequency                weekly | monthly | quarterly | halfyearly | annual
+#   review_type                     Reviewers | Self        ("Manager" is rejected)
+#   duration_in_days                how long each campaign stays open
+#   timeout_behavior                keepAccess | removeAccess
+#   approver_justification_required defaults true
+#
+# PRESENCE MEANS ON. There is no `enabled` field, on purpose: an `enabled` here plus the master
+# switch would be two switches at the same granularity with no obvious precedence.
+#
+# Consequence worth knowing: setting `defaults.access_reviews` turns reviews on for EVERY package,
+# and there is no per-package opt-out. If you want reviews on some packages only, leave the
+# default unset and set the block on the packages that need it.
+#
+# `starting_on` and `access_recommendation_enabled` are not exposed. See the leaf module's
+# variables.tf for why.
+
 variable "packages" {
   description = <<-EOT
     Named access packages, keyed on package name. OPTIONAL — leave it empty and the module
@@ -263,6 +308,15 @@ variable "packages" {
     question_text            = optional(string)
     hidden                   = optional(bool)
     requests_accepted        = optional(bool)
+
+    # Presence means this package gets a recurring review. See the note above the variable.
+    access_reviews = optional(object({
+      review_frequency                = optional(string)
+      review_type                     = optional(string)
+      duration_in_days                = optional(number)
+      timeout_behavior                = optional(string)
+      approver_justification_required = optional(bool)
+    }))
 
     # Removed. Declared only so that setting it fails with an explanation rather than
     # "unsupported argument". See the validation below.
@@ -402,6 +456,16 @@ variable "approver_packages" {
     question_text            = optional(string)
     hidden                   = optional(bool)
     requests_accepted        = optional(bool)
+
+    # Approver packages arguably need reviews most: approver rights are standing and confer
+    # authority over other people's access, with no activation step in between.
+    access_reviews = optional(object({
+      review_frequency                = optional(string)
+      review_type                     = optional(string)
+      duration_in_days                = optional(number)
+      timeout_behavior                = optional(string)
+      approver_justification_required = optional(bool)
+    }))
   }))
 
   default = {}
@@ -422,6 +486,17 @@ variable "defaults" {
     requestor_scope_type     = optional(string, "AllExistingDirectoryMemberUsers")
     require_justification    = optional(bool, true)
     approval_timeout_days    = optional(number, 7)
+
+    # Setting this turns reviews on for EVERY package, with no per-package opt-out. Leave it
+    # unset and configure per package if you want reviews on some only. See the note above
+    # var.packages.
+    access_reviews = optional(object({
+      review_frequency                = optional(string)
+      review_type                     = optional(string)
+      duration_in_days                = optional(number)
+      timeout_behavior                = optional(string)
+      approver_justification_required = optional(bool)
+    }))
 
     # Removed. Declared only so that setting it fails with an explanation.
     grant_approver_group = optional(bool)
@@ -455,9 +530,10 @@ variable "defaults" {
     error_message = <<-EOT
       defaults.assignment_duration_days must be between 1 and 3650.
 
-      Short durations are this system's substitute for access reviews: the assignment expires
-      and the user has to ask again. Note that individual packages have their own lower
-      ceiling, taken from repo 1's max_assignment_days for the roles they grant.
+      A short duration is a control in its own right: the assignment expires and the user has to
+      ask again, with nobody in the loop. Note two constraints pulling opposite ways — individual
+      packages have a lower ceiling from the contract's max_assignment_days, and any package with
+      an access_reviews block needs a duration LONGER than its review interval.
     EOT
   }
 
